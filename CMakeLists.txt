@@ -17,6 +17,8 @@ pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
 set(XDG_SHELL_PROTOCOL "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(COMPILED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(EMBEDDED_SHADER_HEADER "${GENERATED_DIR}/womp/renderer/EmbeddedShaders.h")
+set(EMBEDDED_SHADER_SOURCE "${GENERATED_DIR}/womp/renderer/EmbeddedShaders.cpp")
 
 add_custom_command(
     OUTPUT
@@ -53,7 +55,20 @@ endforeach()
 
 add_custom_target(womp_shaders DEPENDS ${COMPILED_SHADERS})
 
+list(JOIN COMPILED_SHADERS "|" EMBEDDED_SHADER_INPUTS)
+add_custom_command(
+    OUTPUT
+        "${EMBEDDED_SHADER_HEADER}"
+        "${EMBEDDED_SHADER_SOURCE}"
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedShaders.cmake" "${GENERATED_DIR}" "${EMBEDDED_SHADER_INPUTS}"
+    DEPENDS
+        ${COMPILED_SHADERS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedShaders.cmake"
+    VERBATIM
+)
+
 add_executable(womp
+    "${EMBEDDED_SHADER_SOURCE}"
     "${GENERATED_DIR}/xdg-shell-protocol.c"
     src/app/App.cpp
     src/main.cpp
@@ -68,10 +83,6 @@ target_compile_features(womp PRIVATE cxx_std_23)
 target_include_directories(womp PRIVATE
     include
     "${GENERATED_DIR}"
-)
-
-target_compile_definitions(womp PRIVATE
-    WOMP_SHADER_DIR="${COMPILED_SHADER_DIR}"
 )
 
 target_link_libraries(womp PRIVATE

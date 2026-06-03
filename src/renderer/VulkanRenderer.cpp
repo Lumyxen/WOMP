@@ -1,18 +1,15 @@
 #include "womp/renderer/VulkanRenderer.h"
 
+#include "womp/renderer/EmbeddedShaders.h"
+
 #include <vulkan/vulkan_wayland.h>
 
 #include <algorithm>
 #include <array>
-#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
-
-#ifndef WOMP_SHADER_DIR
-#define WOMP_SHADER_DIR "shaders"
-#endif
 
 namespace womp {
 
@@ -34,20 +31,6 @@ void require(VkResult result, const char* message)
     if (result != VK_SUCCESS) {
         throw std::runtime_error(message);
     }
-}
-
-std::vector<char> readFile(const std::string& path)
-{
-    std::ifstream file(path, std::ios::ate | std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("failed to open " + path);
-    }
-
-    const auto size = file.tellg();
-    std::vector<char> bytes(static_cast<std::size_t>(size));
-    file.seekg(0);
-    file.read(bytes.data(), size);
-    return bytes;
 }
 
 } // namespace
@@ -772,13 +755,12 @@ VkExtent2D VulkanRenderer::selectSwapExtent(const VkSurfaceCapabilitiesKHR& capa
 
 VkShaderModule VulkanRenderer::createShaderModule(const char* filename) const
 {
-    const std::string path = std::string(WOMP_SHADER_DIR) + "/" + filename;
-    const std::vector<char> code = readFile(path);
+    const EmbeddedShader shaderCode = embeddedShader(filename);
 
     const VkShaderModuleCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = code.size(),
-        .pCode = reinterpret_cast<const std::uint32_t*>(code.data()),
+        .codeSize = shaderCode.size,
+        .pCode = shaderCode.code,
     };
 
     VkShaderModule shader = VK_NULL_HANDLE;
