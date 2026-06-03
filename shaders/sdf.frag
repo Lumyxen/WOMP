@@ -5,6 +5,7 @@ layout(push_constant) uniform Shape {
     vec4 fill;
     vec4 stroke;
     vec4 params;
+    vec4 extra;
 } shape;
 
 layout(location = 0) out vec4 color;
@@ -28,6 +29,43 @@ float lineSdf(vec2 point, vec2 start, vec2 end, float thickness)
     float segmentLengthSq = dot(segment, segment);
     float t = segmentLengthSq > 0.0 ? clamp(dot(point - start, segment) / segmentLengthSq, 0.0, 1.0) : 0.0;
     return length(point - (start + segment * t)) - max(thickness * 0.5, 0.0);
+}
+
+float quadSdf(vec2 point, vec2 origin, vec2 size)
+{
+    vec2 center = origin + size * 0.5;
+    vec2 halfSize = abs(size) * 0.5;
+    vec2 q = abs(point - center) - halfSize;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+float signedTriangleArea(vec2 a, vec2 b, vec2 c)
+{
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+float segmentDistance(vec2 point, vec2 start, vec2 end)
+{
+    vec2 segment = end - start;
+    float segmentLengthSq = dot(segment, segment);
+    float t = segmentLengthSq > 0.0 ? clamp(dot(point - start, segment) / segmentLengthSq, 0.0, 1.0) : 0.0;
+    return length(point - (start + segment * t));
+}
+
+float triangleSdf(vec2 point, vec2 a, vec2 b, vec2 c)
+{
+    float winding = sign(signedTriangleArea(a, b, c));
+    winding = winding == 0.0 ? 1.0 : winding;
+
+    float d0 = winding * signedTriangleArea(a, b, point);
+    float d1 = winding * signedTriangleArea(b, c, point);
+    float d2 = winding * signedTriangleArea(c, a, point);
+    float minEdge = min(d0, min(d1, d2));
+    float edgeDistance = min(
+        segmentDistance(point, a, b),
+        min(segmentDistance(point, b, c), segmentDistance(point, c, a)));
+
+    return minEdge >= 0.0 ? -edgeDistance : edgeDistance;
 }
 
 vec4 compose(float distanceToEdge)
@@ -60,6 +98,10 @@ void main()
         distanceToEdge = circleSdf(gl_FragCoord.xy - shape.rect.xy, shape.params.x);
     } else if (kind == 2) {
         distanceToEdge = lineSdf(gl_FragCoord.xy, shape.rect.xy, shape.rect.zw, shape.params.x);
+    } else if (kind == 3) {
+        distanceToEdge = quadSdf(gl_FragCoord.xy, shape.rect.xy, shape.rect.zw);
+    } else if (kind == 4) {
+        distanceToEdge = triangleSdf(gl_FragCoord.xy, shape.rect.xy, shape.rect.zw, shape.extra.xy);
     } else {
         vec2 center = shape.rect.xy + shape.rect.zw * 0.5;
         distanceToEdge = roundedRectSdf(gl_FragCoord.xy - center, shape.rect.zw, shape.params.x);

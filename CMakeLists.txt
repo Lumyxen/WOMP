@@ -9,6 +9,8 @@ project(womp
 find_package(Vulkan REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 
 find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -36,6 +38,8 @@ set(SHADERS
     shaders/background.frag
     shaders/sdf.vert
     shaders/sdf.frag
+    shaders/text.vert
+    shaders/text.frag
 )
 
 foreach(SHADER IN LISTS SHADERS)
@@ -74,6 +78,7 @@ add_executable(womp
     src/main.cpp
     src/platform/WaylandWindow.cpp
     src/renderer/VulkanRenderer.cpp
+    src/scene/Primitive.cpp
 )
 
 add_dependencies(womp womp_shaders)
@@ -88,6 +93,8 @@ target_include_directories(womp PRIVATE
 target_link_libraries(womp PRIVATE
     Vulkan::Vulkan
     PkgConfig::WAYLAND
+    PkgConfig::FREETYPE
+    PkgConfig::FONTCONFIG
 )
 
 set_target_properties(womp PROPERTIES

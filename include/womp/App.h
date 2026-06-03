@@ -2,6 +2,7 @@
 
 #include "womp/platform/WaylandWindow.h"
 #include "womp/renderer/VulkanRenderer.h"
+#include "womp/scene/Primitive.h"
 
 namespace womp {
 
@@ -14,6 +15,7 @@ public:
 private:
     WaylandWindow window_;
     VulkanRenderer renderer_;
+    PrimitiveStore primitives_;
 };
 
 } // namespace womp
