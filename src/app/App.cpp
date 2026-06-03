@@ -49,6 +49,7 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
     constexpr float sidebarButtonHeight = 36.0f;
     constexpr float sidebarButtonGap = 4.0f;
     constexpr float sidebarButtonWidth = sidebarWidth - sidebarPadding * 2.0f;
+    constexpr float playlistButtonHeight = 48.0f;
     const Color sidebarBackground = rgb(45, 53, 59);
     const Color transparent = {0.0f, 0.0f, 0.0f, 0.0f};
     const Color sidebarText = rgb(211, 198, 170);
@@ -61,6 +62,7 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
 
     const std::string addSongsIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus-icon lucide-plus"><path d="M5 12h14"/><path d="M12 5v14"/></svg>)";
     const std::string settingsIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings2-icon lucide-settings-2"><path d="M14 17H5"/><path d="M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>)";
+    const std::string playlistIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-music-icon lucide-list-music"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M11 19H3"/><path d="M21 16V5"/><circle cx="18" cy="16" r="3"/></svg>)";
 
     const auto addSidebarButton = [&](std::string label, std::string iconSvg, float y) {
         primitives.add(Primitive::button(
@@ -74,6 +76,37 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
                 .fontSize = 15.0f,
                 .iconSize = 18.0f,
                 .iconGap = 10.0f,
+                .label = std::move(label),
+                .iconSvg = std::move(iconSvg),
+                .iconColor = iconGrey,
+                .labelColor = sidebarText,
+                .hoverLabelColor = accent,
+                .pressedLabelColor = sidebarText,
+                .hoverFill = mantle,
+                .pressedFill = activeFill,
+                .hoverStroke = border,
+                .pressedStroke = accent,
+                .centerLabel = false,
+            },
+            {
+                .fill = transparent,
+                .stroke = transparent,
+                .strokeWidth = 1.0f,
+            }));
+    };
+
+    const auto addPlaylistButton = [&](std::string label, std::string iconSvg, float y) {
+        primitives.add(Primitive::button(
+            {
+                .x = sidebarPadding,
+                .y = y,
+                .width = sidebarButtonWidth,
+                .height = playlistButtonHeight,
+                .padding = 14.0f,
+                .radius = 0.0f,
+                .fontSize = 17.0f,
+                .iconSize = 22.0f,
+                .iconGap = 12.0f,
                 .label = std::move(label),
                 .iconSvg = std::move(iconSvg),
                 .iconColor = iconGrey,
@@ -116,13 +149,28 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
             .strokeWidth = 1.0f,
         }));
 
+    addPlaylistButton("All Songs", playlistIcon, sidebarPadding);
+    primitives.add(Primitive::line(
+        {
+            .x0 = sidebarPadding,
+            .y0 = sidebarPadding + playlistButtonHeight + sidebarPadding,
+            .x1 = sidebarWidth - sidebarPadding,
+            .y1 = sidebarPadding + playlistButtonHeight + sidebarPadding,
+            .thickness = 1.0f,
+        },
+        {
+            .fill = separator,
+            .stroke = separator,
+            .strokeWidth = 1.0f,
+        }));
+
     const float helpY = windowHeight - sidebarPadding - sidebarButtonHeight;
     const float addSongsY = helpY - sidebarButtonGap - sidebarButtonHeight;
     primitives.add(Primitive::line(
         {
-            .x0 = 0.0f,
+            .x0 = sidebarPadding,
             .y0 = addSongsY - sidebarPadding,
-            .x1 = sidebarWidth,
+            .x1 = sidebarWidth - sidebarPadding,
             .y1 = addSongsY - sidebarPadding,
             .thickness = 1.0f,
         },
