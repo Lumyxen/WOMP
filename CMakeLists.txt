@@ -32,6 +32,8 @@ add_custom_command(
 set(SHADERS
     shaders/background.vert
     shaders/background.frag
+    shaders/sdf.vert
+    shaders/sdf.frag
 )
 
 foreach(SHADER IN LISTS SHADERS)

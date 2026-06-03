@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #ifndef WOMP_SHADER_DIR
 #define WOMP_SHADER_DIR "shaders"
@@ -19,6 +20,13 @@ namespace {
 
 constexpr std::array deviceExtensions{
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+};
+
+struct SdfPushConstants {
+    float rect[4]{};
+    float fill[4]{};
+    float stroke[4]{};
+    float params[4]{};
 };
 
 void require(VkResult result, const char* message)
@@ -54,7 +62,7 @@ VulkanRenderer::VulkanRenderer(WaylandWindow& window)
     createSwapchain();
     createImageViews();
     createRenderPass();
-    createPipeline();
+    createPipelines();
     createFramebuffers();
     createCommandPool();
     createCommandBuffers();
@@ -79,6 +87,85 @@ VulkanRenderer::~VulkanRenderer()
     }
     if (instance_ != VK_NULL_HANDLE) {
         vkDestroyInstance(instance_, nullptr);
+    }
+}
+
+void VulkanRenderer::setSdfShapes(std::vector<SdfShape> shapes)
+{
+    sdfShapes_ = std::move(shapes);
+    if (!commandBuffers_.empty() && !framebuffers_.empty()) {
+        vkDeviceWaitIdle(device_);
+        createCommandBuffers();
+    }
+}
+
+void VulkanRenderer::clearSdfShapes()
+{
+    setSdfShapes({});
+}
+
+void VulkanRenderer::addSdfRoundedRect(float x, float y, float width, float height, float radius, Color fill)
+{
+    addSdfRoundedRect(x, y, width, height, radius, fill, 0.0f, {});
+}
+
+void VulkanRenderer::addSdfRoundedRect(float x, float y, float width, float height, float radius, Color fill, float strokeWidth, Color stroke)
+{
+    sdfShapes_.push_back({
+        .kind = SdfShapeKind::RoundedRect,
+        .x = x,
+        .y = y,
+        .width = width,
+        .height = height,
+        .radius = radius,
+        .strokeWidth = strokeWidth,
+        .fill = fill,
+        .stroke = stroke,
+    });
+    if (!commandBuffers_.empty() && !framebuffers_.empty()) {
+        vkDeviceWaitIdle(device_);
+        createCommandBuffers();
+    }
+}
+
+void VulkanRenderer::addSdfCircle(float centerX, float centerY, float radius, Color fill)
+{
+    addSdfCircle(centerX, centerY, radius, fill, 0.0f, {});
+}
+
+void VulkanRenderer::addSdfCircle(float centerX, float centerY, float radius, Color fill, float strokeWidth, Color stroke)
+{
+    sdfShapes_.push_back({
+        .kind = SdfShapeKind::Circle,
+        .x = centerX,
+        .y = centerY,
+        .width = radius,
+        .height = radius,
+        .radius = radius,
+        .strokeWidth = strokeWidth,
+        .fill = fill,
+        .stroke = stroke,
+    });
+    if (!commandBuffers_.empty() && !framebuffers_.empty()) {
+        vkDeviceWaitIdle(device_);
+        createCommandBuffers();
+    }
+}
+
+void VulkanRenderer::addSdfLine(float x0, float y0, float x1, float y1, float thickness, Color fill)
+{
+    sdfShapes_.push_back({
+        .kind = SdfShapeKind::Line,
+        .x = x0,
+        .y = y0,
+        .width = x1,
+        .height = y1,
+        .radius = thickness,
+        .fill = fill,
+    });
+    if (!commandBuffers_.empty() && !framebuffers_.empty()) {
+        vkDeviceWaitIdle(device_);
+        createCommandBuffers();
     }
 }
 
@@ -144,7 +231,7 @@ void VulkanRenderer::recreateSwapchain()
     createSwapchain();
     createImageViews();
     createRenderPass();
-    createPipeline();
+    createPipelines();
     createFramebuffers();
     createCommandBuffers();
 }
@@ -363,104 +450,137 @@ void VulkanRenderer::createRenderPass()
     require(vkCreateRenderPass(device_, &createInfo, nullptr, &renderPass_), "failed to create render pass");
 }
 
-void VulkanRenderer::createPipeline()
+void VulkanRenderer::createPipelines()
 {
-    const VkShaderModule vertexShader = createShaderModule("background.vert.spv");
-    const VkShaderModule fragmentShader = createShaderModule("background.frag.spv");
+    const auto createPipeline = [&](const char* vertexShaderName,
+                                    const char* fragmentShaderName,
+                                    VkPipelineLayout pipelineLayout,
+                                    VkPipelineColorBlendAttachmentState colorBlendAttachment) {
+        const VkShaderModule vertexShader = createShaderModule(vertexShaderName);
+        const VkShaderModule fragmentShader = createShaderModule(fragmentShaderName);
 
-    const VkPipelineShaderStageCreateInfo vertexStage{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-        .module = vertexShader,
-        .pName = "main",
+        const VkPipelineShaderStageCreateInfo vertexStage{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vertexShader,
+            .pName = "main",
+        };
+
+        const VkPipelineShaderStageCreateInfo fragmentStage{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = fragmentShader,
+            .pName = "main",
+        };
+
+        const std::array stages{vertexStage, fragmentStage};
+        const VkPipelineVertexInputStateCreateInfo vertexInput{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        };
+
+        const VkPipelineInputAssemblyStateCreateInfo assembly{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        };
+
+        const VkViewport viewport{
+            .x = 0.0f,
+            .y = 0.0f,
+            .width = static_cast<float>(swapchainExtent_.width),
+            .height = static_cast<float>(swapchainExtent_.height),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        };
+
+        const VkRect2D scissor{
+            .offset = {0, 0},
+            .extent = swapchainExtent_,
+        };
+
+        const VkPipelineViewportStateCreateInfo viewportState{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .pViewports = &viewport,
+            .scissorCount = 1,
+            .pScissors = &scissor,
+        };
+
+        const VkPipelineRasterizationStateCreateInfo rasterizer{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_NONE,
+            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .lineWidth = 1.0f,
+        };
+
+        const VkPipelineMultisampleStateCreateInfo multisampling{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        };
+
+        const VkPipelineColorBlendStateCreateInfo colorBlending{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &colorBlendAttachment,
+        };
+
+        const VkGraphicsPipelineCreateInfo pipelineInfo{
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = static_cast<std::uint32_t>(stages.size()),
+            .pStages = stages.data(),
+            .pVertexInputState = &vertexInput,
+            .pInputAssemblyState = &assembly,
+            .pViewportState = &viewportState,
+            .pRasterizationState = &rasterizer,
+            .pMultisampleState = &multisampling,
+            .pColorBlendState = &colorBlending,
+            .layout = pipelineLayout,
+            .renderPass = renderPass_,
+            .subpass = 0,
+        };
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        require(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline), "failed to create graphics pipeline");
+
+        vkDestroyShaderModule(device_, fragmentShader, nullptr);
+        vkDestroyShaderModule(device_, vertexShader, nullptr);
+
+        return pipeline;
     };
 
-    const VkPipelineShaderStageCreateInfo fragmentStage{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .module = fragmentShader,
-        .pName = "main",
-    };
-
-    const std::array stages{vertexStage, fragmentStage};
-    const VkPipelineVertexInputStateCreateInfo vertexInput{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-    };
-
-    const VkPipelineInputAssemblyStateCreateInfo assembly{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-    };
-
-    const VkViewport viewport{
-        .x = 0.0f,
-        .y = 0.0f,
-        .width = static_cast<float>(swapchainExtent_.width),
-        .height = static_cast<float>(swapchainExtent_.height),
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
-
-    const VkRect2D scissor{
-        .offset = {0, 0},
-        .extent = swapchainExtent_,
-    };
-
-    const VkPipelineViewportStateCreateInfo viewportState{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .pViewports = &viewport,
-        .scissorCount = 1,
-        .pScissors = &scissor,
-    };
-
-    const VkPipelineRasterizationStateCreateInfo rasterizer{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        .lineWidth = 1.0f,
-    };
-
-    const VkPipelineMultisampleStateCreateInfo multisampling{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-    };
-
-    const VkPipelineColorBlendAttachmentState colorBlendAttachment{
-        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-    };
-
-    const VkPipelineColorBlendStateCreateInfo colorBlending{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &colorBlendAttachment,
-    };
-
-    const VkPipelineLayoutCreateInfo layoutInfo{
+    const VkPipelineLayoutCreateInfo backgroundLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     };
-    require(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &pipelineLayout_), "failed to create pipeline layout");
+    require(vkCreatePipelineLayout(device_, &backgroundLayoutInfo, nullptr, &backgroundPipelineLayout_), "failed to create background pipeline layout");
 
-    const VkGraphicsPipelineCreateInfo pipelineInfo{
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount = static_cast<std::uint32_t>(stages.size()),
-        .pStages = stages.data(),
-        .pVertexInputState = &vertexInput,
-        .pInputAssemblyState = &assembly,
-        .pViewportState = &viewportState,
-        .pRasterizationState = &rasterizer,
-        .pMultisampleState = &multisampling,
-        .pColorBlendState = &colorBlending,
-        .layout = pipelineLayout_,
-        .renderPass = renderPass_,
-        .subpass = 0,
+    const VkPushConstantRange sdfPushConstantRange{
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = sizeof(SdfPushConstants),
     };
+    const VkPipelineLayoutCreateInfo sdfLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &sdfPushConstantRange,
+    };
+    require(vkCreatePipelineLayout(device_, &sdfLayoutInfo, nullptr, &sdfPipelineLayout_), "failed to create SDF pipeline layout");
 
-    require(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_), "failed to create graphics pipeline");
+    const VkPipelineColorBlendAttachmentState opaqueBlend{
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    backgroundPipeline_ = createPipeline("background.vert.spv", "background.frag.spv", backgroundPipelineLayout_, opaqueBlend);
 
-    vkDestroyShaderModule(device_, fragmentShader, nullptr);
-    vkDestroyShaderModule(device_, vertexShader, nullptr);
+    const VkPipelineColorBlendAttachmentState alphaBlend{
+        .blendEnable = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    sdfPipeline_ = createPipeline("sdf.vert.spv", "sdf.frag.spv", sdfPipelineLayout_, alphaBlend);
 }
 
 void VulkanRenderer::createFramebuffers()
@@ -515,24 +635,43 @@ void VulkanRenderer::createCommandBuffers()
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         };
         require(vkBeginCommandBuffer(commandBuffers_[i], &beginInfo), "failed to begin command buffer");
-
-        constexpr VkClearValue clearColor{{{0.0f, 0.0f, 0.0f, 1.0f}}};
-        const VkRenderPassBeginInfo renderPassInfo{
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = renderPass_,
-            .framebuffer = framebuffers_[i],
-            .renderArea = {{0, 0}, swapchainExtent_},
-            .clearValueCount = 1,
-            .pClearValues = &clearColor,
-        };
-
-        vkCmdBeginRenderPass(commandBuffers_[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(commandBuffers_[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-        vkCmdDraw(commandBuffers_[i], 6, 1, 0, 0);
-        vkCmdEndRenderPass(commandBuffers_[i]);
+        recordCommandBuffer(commandBuffers_[i], framebuffers_[i]);
 
         require(vkEndCommandBuffer(commandBuffers_[i]), "failed to record command buffer");
     }
+}
+
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer)
+{
+    constexpr VkClearValue clearColor{{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    const VkRenderPassBeginInfo renderPassInfo{
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = renderPass_,
+        .framebuffer = framebuffer,
+        .renderArea = {{0, 0}, swapchainExtent_},
+        .clearValueCount = 1,
+        .pClearValues = &clearColor,
+    };
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
+    vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+
+    if (!sdfShapes_.empty()) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sdfPipeline_);
+        for (const SdfShape& shape : sdfShapes_) {
+            const SdfPushConstants push{
+                .rect = {shape.x, shape.y, shape.width, shape.height},
+                .fill = {shape.fill.r, shape.fill.g, shape.fill.b, shape.fill.a},
+                .stroke = {shape.stroke.r, shape.stroke.g, shape.stroke.b, shape.stroke.a},
+                .params = {shape.radius, shape.strokeWidth, static_cast<float>(shape.kind), 1.0f},
+            };
+            vkCmdPushConstants(commandBuffer, sdfPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+        }
+    }
+
+    vkCmdEndRenderPass(commandBuffer);
 }
 
 void VulkanRenderer::createSyncObjects()
@@ -562,10 +701,14 @@ void VulkanRenderer::cleanupSwapchain()
     }
     framebuffers_.clear();
 
-    vkDestroyPipeline(device_, pipeline_, nullptr);
-    pipeline_ = VK_NULL_HANDLE;
-    vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
-    pipelineLayout_ = VK_NULL_HANDLE;
+    vkDestroyPipeline(device_, sdfPipeline_, nullptr);
+    sdfPipeline_ = VK_NULL_HANDLE;
+    vkDestroyPipelineLayout(device_, sdfPipelineLayout_, nullptr);
+    sdfPipelineLayout_ = VK_NULL_HANDLE;
+    vkDestroyPipeline(device_, backgroundPipeline_, nullptr);
+    backgroundPipeline_ = VK_NULL_HANDLE;
+    vkDestroyPipelineLayout(device_, backgroundPipelineLayout_, nullptr);
+    backgroundPipelineLayout_ = VK_NULL_HANDLE;
     vkDestroyRenderPass(device_, renderPass_, nullptr);
     renderPass_ = VK_NULL_HANDLE;
 
