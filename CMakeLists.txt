@@ -9,8 +9,11 @@ project(womp
 find_package(Vulkan REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(WAYLAND_CURSOR REQUIRED IMPORTED_TARGET wayland-cursor)
 pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+pkg_check_modules(LIBRSVG REQUIRED IMPORTED_TARGET librsvg-2.0)
+pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 
 find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -40,6 +43,8 @@ set(SHADERS
     shaders/sdf.frag
     shaders/text.vert
     shaders/text.frag
+    shaders/svg.vert
+    shaders/svg.frag
 )
 
 foreach(SHADER IN LISTS SHADERS)
@@ -93,8 +98,11 @@ target_include_directories(womp PRIVATE
 target_link_libraries(womp PRIVATE
     Vulkan::Vulkan
     PkgConfig::WAYLAND
+    PkgConfig::WAYLAND_CURSOR
     PkgConfig::FREETYPE
     PkgConfig::FONTCONFIG
+    PkgConfig::LIBRSVG
+    PkgConfig::CAIRO
 )
 
 set_target_properties(womp PROPERTIES

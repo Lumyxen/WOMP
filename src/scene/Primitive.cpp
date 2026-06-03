@@ -53,7 +53,23 @@ Primitive Primitive::text(TextPrimitive geometry, PrimitiveStyle style)
     };
 }
 
+Primitive Primitive::svg(SvgPrimitive geometry, PrimitiveStyle style)
+{
+    return {
+        .geometry = std::move(geometry),
+        .style = style,
+    };
+}
+
 Primitive Primitive::textField(TextFieldPrimitive geometry, PrimitiveStyle style)
+{
+    return {
+        .geometry = std::move(geometry),
+        .style = style,
+    };
+}
+
+Primitive Primitive::button(ButtonPrimitive geometry, PrimitiveStyle style)
 {
     return {
         .geometry = std::move(geometry),
@@ -120,6 +136,11 @@ bool PrimitiveStore::empty() const
 std::size_t PrimitiveStore::size() const
 {
     return primitives_.size();
+}
+
+std::vector<Primitive>& PrimitiveStore::all()
+{
+    return primitives_;
 }
 
 const std::vector<Primitive>& PrimitiveStore::all() const

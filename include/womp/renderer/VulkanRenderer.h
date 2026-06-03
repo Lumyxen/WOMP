@@ -48,9 +48,11 @@ private:
     void createSyncObjects();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer);
     void rebuildTextAtlas();
+    void rebuildSvgAtlas();
 
     void cleanupSwapchain();
     void cleanupTextAtlas();
+    void cleanupSvgAtlas();
     QueueFamily findGraphicsPresentQueue(VkPhysicalDevice device) const;
     VkSurfaceFormatKHR selectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const;
     VkPresentModeKHR selectPresentMode(const std::vector<VkPresentModeKHR>& modes) const;
@@ -84,6 +86,16 @@ private:
     VkDescriptorSet textDescriptorSet_ = VK_NULL_HANDLE;
     VkPipelineLayout textPipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline textPipeline_ = VK_NULL_HANDLE;
+    VkDescriptorPool svgDescriptorPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet svgDescriptorSet_ = VK_NULL_HANDLE;
+    VkPipelineLayout svgPipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline svgPipeline_ = VK_NULL_HANDLE;
+    VkImage svgAtlasImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory svgAtlasMemory_ = VK_NULL_HANDLE;
+    VkImageView svgAtlasView_ = VK_NULL_HANDLE;
+    VkSampler svgAtlasSampler_ = VK_NULL_HANDLE;
+    std::uint32_t svgAtlasWidth_ = 0;
+    std::uint32_t svgAtlasHeight_ = 0;
     VkImage textAtlasImage_ = VK_NULL_HANDLE;
     VkDeviceMemory textAtlasMemory_ = VK_NULL_HANDLE;
     VkImageView textAtlasView_ = VK_NULL_HANDLE;
@@ -102,6 +114,15 @@ private:
 
     std::unordered_map<PrimitiveId, std::vector<TextGlyphDraw>> textGlyphs_;
     std::unordered_map<PrimitiveId, float> textCaretX_;
+
+    struct SvgDraw {
+        float rect[4]{};
+        float uv[4]{};
+        Color color{};
+        float mode = 0.0f;
+    };
+
+    std::unordered_map<PrimitiveId, SvgDraw> svgDraws_;
 
     VkSemaphore imageAvailable_ = VK_NULL_HANDLE;
     VkSemaphore renderFinished_ = VK_NULL_HANDLE;

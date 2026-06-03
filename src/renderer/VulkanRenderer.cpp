@@ -2,14 +2,18 @@
 
 #include "womp/renderer/EmbeddedShaders.h"
 
+#include <cairo.h>
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <librsvg/rsvg.h>
 #include <vulkan/vulkan_wayland.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <limits>
 #include <memory>
@@ -43,6 +47,13 @@ struct TextPushConstants {
     float atlas[4]{};
 };
 
+struct SvgPushConstants {
+    float rect[4]{};
+    float uv[4]{};
+    float color[4]{};
+    float params[4]{};
+};
+
 enum class SdfPrimitiveKind : std::uint32_t {
     RoundedRect = 0,
     Circle = 1,
@@ -60,12 +71,23 @@ struct GlyphBitmap {
     std::vector<std::uint8_t> pixels;
 };
 
+struct SvgBitmap {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
 struct FontMatch {
     std::string path;
     int faceIndex = 0;
 };
 
 using GlyphKey = std::tuple<std::string, int, std::uint32_t, std::uint32_t>;
+
+float snapPixel(float value)
+{
+    return std::round(value);
+}
 
 void require(VkResult result, const char* message)
 {
@@ -177,7 +199,7 @@ GlyphBitmap renderGlyph(FT_Library library, const FontMatch& font, std::uint32_t
     auto face = std::unique_ptr<std::remove_pointer_t<FT_Face>, decltype(&FT_Done_Face)>(rawFace, FT_Done_Face);
     FT_Set_Pixel_Sizes(face.get(), 0, pixelSize);
 
-    if (FT_Load_Char(face.get(), codepoint, FT_LOAD_RENDER) != 0) {
+    if (FT_Load_Char(face.get(), codepoint, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) {
         return {};
     }
 
@@ -198,6 +220,225 @@ GlyphBitmap renderGlyph(FT_Library library, const FontMatch& font, std::uint32_t
     }
 
     return bitmap;
+}
+
+std::vector<std::uint8_t> readFileBytes(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("failed to open SVG file: " + path);
+    }
+
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+SvgBitmap renderSvgBitmap(const SvgPrimitive& svg)
+{
+    std::vector<std::uint8_t> bytes;
+    if (svg.sourceType == SvgSourceType::File) {
+        bytes = readFileBytes(svg.source);
+    } else {
+        bytes.assign(svg.source.begin(), svg.source.end());
+    }
+
+    GError* error = nullptr;
+    RsvgHandle* rawHandle = rsvg_handle_new_from_data(bytes.data(), bytes.size(), &error);
+    if (rawHandle == nullptr) {
+        std::string message = "failed to parse SVG";
+        if (error != nullptr) {
+            message += ": ";
+            message += error->message;
+            g_error_free(error);
+        }
+        throw std::runtime_error(message);
+    }
+
+    auto handle = std::unique_ptr<RsvgHandle, decltype(&g_object_unref)>(rawHandle, g_object_unref);
+
+    double intrinsicWidth = 0.0;
+    double intrinsicHeight = 0.0;
+    gboolean hasIntrinsicSize = rsvg_handle_get_intrinsic_size_in_pixels(handle.get(), &intrinsicWidth, &intrinsicHeight);
+    if (!hasIntrinsicSize || intrinsicWidth <= 0.0 || intrinsicHeight <= 0.0) {
+        RsvgDimensionData dimensions{};
+        rsvg_handle_get_dimensions(handle.get(), &dimensions);
+        intrinsicWidth = static_cast<double>(std::max(dimensions.width, 1));
+        intrinsicHeight = static_cast<double>(std::max(dimensions.height, 1));
+    }
+
+    const float rasterScale = std::max(svg.rasterScale, 1.0f);
+    const float targetWidth = svg.width > 0.0f ? svg.width : static_cast<float>(intrinsicWidth);
+    const float targetHeight = svg.height > 0.0f ? svg.height : static_cast<float>(intrinsicHeight);
+    const auto width = std::max(1u, static_cast<std::uint32_t>(targetWidth * rasterScale + 0.5f));
+    const auto height = std::max(1u, static_cast<std::uint32_t>(targetHeight * rasterScale + 0.5f));
+
+    auto surface = std::unique_ptr<cairo_surface_t, decltype(&cairo_surface_destroy)>(
+        cairo_image_surface_create(CAIRO_FORMAT_ARGB32, static_cast<int>(width), static_cast<int>(height)),
+        cairo_surface_destroy);
+    auto cairo = std::unique_ptr<cairo_t, decltype(&cairo_destroy)>(cairo_create(surface.get()), cairo_destroy);
+
+    cairo_set_operator(cairo.get(), CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cairo.get());
+    cairo_set_operator(cairo.get(), CAIRO_OPERATOR_OVER);
+
+    const RsvgRectangle viewport{
+        .x = 0.0,
+        .y = 0.0,
+        .width = static_cast<double>(width),
+        .height = static_cast<double>(height),
+    };
+
+    error = nullptr;
+    if (!rsvg_handle_render_document(handle.get(), cairo.get(), &viewport, &error)) {
+        std::string message = "failed to render SVG";
+        if (error != nullptr) {
+            message += ": ";
+            message += error->message;
+            g_error_free(error);
+        }
+        throw std::runtime_error(message);
+    }
+
+    cairo_surface_flush(surface.get());
+    const auto* source = cairo_image_surface_get_data(surface.get());
+    const int stride = cairo_image_surface_get_stride(surface.get());
+
+    SvgBitmap bitmap{
+        .width = width,
+        .height = height,
+        .rgba = std::vector<std::uint8_t>(width * height * 4, 0),
+    };
+
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const std::uint8_t* src = source + y * stride;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::uint8_t b = src[x * 4 + 0];
+            const std::uint8_t g = src[x * 4 + 1];
+            const std::uint8_t r = src[x * 4 + 2];
+            const std::uint8_t a = src[x * 4 + 3];
+            std::uint8_t* dst = bitmap.rgba.data() + (y * width + x) * 4;
+            if (a == 0) {
+                continue;
+            }
+
+            dst[0] = static_cast<std::uint8_t>(std::min(255u, (static_cast<unsigned>(r) * 255u + a / 2u) / a));
+            dst[1] = static_cast<std::uint8_t>(std::min(255u, (static_cast<unsigned>(g) * 255u + a / 2u) / a));
+            dst[2] = static_cast<std::uint8_t>(std::min(255u, (static_cast<unsigned>(b) * 255u + a / 2u) / a));
+            dst[3] = a;
+        }
+    }
+
+    return bitmap;
+}
+
+SvgBitmap downsampleSvgBitmap(const SvgBitmap& source, std::uint32_t targetWidth, std::uint32_t targetHeight)
+{
+    if (source.width == targetWidth && source.height == targetHeight) {
+        return source;
+    }
+
+    SvgBitmap result{
+        .width = targetWidth,
+        .height = targetHeight,
+        .rgba = std::vector<std::uint8_t>(targetWidth * targetHeight * 4, 0),
+    };
+
+    const double scaleX = static_cast<double>(source.width) / static_cast<double>(targetWidth);
+    const double scaleY = static_cast<double>(source.height) / static_cast<double>(targetHeight);
+
+    for (std::uint32_t y = 0; y < targetHeight; ++y) {
+        const double srcY0 = static_cast<double>(y) * scaleY;
+        const double srcY1 = static_cast<double>(y + 1) * scaleY;
+        const int y0 = static_cast<int>(std::floor(srcY0));
+        const int y1 = static_cast<int>(std::ceil(srcY1));
+
+        for (std::uint32_t x = 0; x < targetWidth; ++x) {
+            const double srcX0 = static_cast<double>(x) * scaleX;
+            const double srcX1 = static_cast<double>(x + 1) * scaleX;
+            const int x0 = static_cast<int>(std::floor(srcX0));
+            const int x1 = static_cast<int>(std::ceil(srcX1));
+
+            double area = 0.0;
+            double alphaSum = 0.0;
+            double colorSum[3]{};
+
+            for (int sy = y0; sy < y1; ++sy) {
+                if (sy < 0 || sy >= static_cast<int>(source.height)) {
+                    continue;
+                }
+                const double overlapY = std::max(0.0, std::min(srcY1, static_cast<double>(sy + 1)) - std::max(srcY0, static_cast<double>(sy)));
+
+                for (int sx = x0; sx < x1; ++sx) {
+                    if (sx < 0 || sx >= static_cast<int>(source.width)) {
+                        continue;
+                    }
+                    const double overlapX = std::max(0.0, std::min(srcX1, static_cast<double>(sx + 1)) - std::max(srcX0, static_cast<double>(sx)));
+                    const double weight = overlapX * overlapY;
+                    const std::uint8_t* src = source.rgba.data() + (static_cast<std::uint32_t>(sy) * source.width + static_cast<std::uint32_t>(sx)) * 4;
+                    const double alpha = static_cast<double>(src[3]);
+
+                    area += weight;
+                    alphaSum += alpha * weight;
+                    colorSum[0] += static_cast<double>(src[0]) * alpha * weight;
+                    colorSum[1] += static_cast<double>(src[1]) * alpha * weight;
+                    colorSum[2] += static_cast<double>(src[2]) * alpha * weight;
+                }
+            }
+
+            std::uint8_t* dst = result.rgba.data() + (y * targetWidth + x) * 4;
+            if (area <= 0.0 || alphaSum <= 0.0) {
+                continue;
+            }
+
+            dst[0] = static_cast<std::uint8_t>(std::clamp(colorSum[0] / alphaSum, 0.0, 255.0) + 0.5);
+            dst[1] = static_cast<std::uint8_t>(std::clamp(colorSum[1] / alphaSum, 0.0, 255.0) + 0.5);
+            dst[2] = static_cast<std::uint8_t>(std::clamp(colorSum[2] / alphaSum, 0.0, 255.0) + 0.5);
+            dst[3] = static_cast<std::uint8_t>(std::clamp(alphaSum / area, 0.0, 255.0) + 0.5);
+        }
+    }
+
+    return result;
+}
+
+void convertSvgAlphaToSdf(SvgBitmap& bitmap, float spread)
+{
+    const std::uint32_t width = bitmap.width;
+    const std::uint32_t height = bitmap.height;
+    const int radius = std::max(1, static_cast<int>(std::ceil(spread)));
+    std::vector<std::uint8_t> sdf(width * height * 4, 255);
+
+    const auto isInside = [&](int x, int y) {
+        return bitmap.rgba[(static_cast<std::uint32_t>(y) * width + static_cast<std::uint32_t>(x)) * 4 + 3] >= 128;
+    };
+
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const bool inside = isInside(static_cast<int>(x), static_cast<int>(y));
+            float nearest = static_cast<float>(radius);
+
+            for (int oy = -radius; oy <= radius; ++oy) {
+                const int sy = static_cast<int>(y) + oy;
+                if (sy < 0 || sy >= static_cast<int>(height)) {
+                    continue;
+                }
+
+                for (int ox = -radius; ox <= radius; ++ox) {
+                    const int sx = static_cast<int>(x) + ox;
+                    if (sx < 0 || sx >= static_cast<int>(width) || isInside(sx, sy) == inside) {
+                        continue;
+                    }
+
+                    nearest = std::min(nearest, std::sqrt(static_cast<float>(ox * ox + oy * oy)));
+                }
+            }
+
+            const float signedDistance = (inside ? nearest : -nearest) / std::max(spread, 1.0f);
+            const float encoded = std::clamp(0.5f + signedDistance * 0.5f, 0.0f, 1.0f);
+            std::uint8_t* dst = sdf.data() + (y * width + x) * 4;
+            dst[3] = static_cast<std::uint8_t>(encoded * 255.0f + 0.5f);
+        }
+    }
+
+    bitmap.rgba = std::move(sdf);
 }
 
 SdfPushConstants toSdfPushConstants(const Primitive& primitive)
@@ -276,6 +517,7 @@ VulkanRenderer::VulkanRenderer(WaylandWindow& window)
     createFramebuffers();
     createCommandPool();
     rebuildTextAtlas();
+    rebuildSvgAtlas();
     createCommandBuffers();
     createSyncObjects();
 }
@@ -285,6 +527,7 @@ VulkanRenderer::~VulkanRenderer()
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
         cleanupSwapchain();
+        cleanupSvgAtlas();
         cleanupTextAtlas();
 
         vkDestroySemaphore(device_, renderFinished_, nullptr);
@@ -309,6 +552,7 @@ void VulkanRenderer::setPrimitives(std::vector<Primitive> primitives)
     if (!commandBuffers_.empty() && !framebuffers_.empty()) {
         vkDeviceWaitIdle(device_);
         rebuildTextAtlas();
+        rebuildSvgAtlas();
         createCommandBuffers();
     }
 }
@@ -324,6 +568,7 @@ void VulkanRenderer::addPrimitive(Primitive primitive)
     if (!commandBuffers_.empty() && !framebuffers_.empty()) {
         vkDeviceWaitIdle(device_);
         rebuildTextAtlas();
+        rebuildSvgAtlas();
         createCommandBuffers();
     }
 }
@@ -756,6 +1001,20 @@ void VulkanRenderer::createPipelines()
     };
     require(vkCreatePipelineLayout(device_, &textLayoutInfo, nullptr, &textPipelineLayout_), "failed to create text pipeline layout");
 
+    const VkPushConstantRange svgPushConstantRange{
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = sizeof(SvgPushConstants),
+    };
+    const VkPipelineLayoutCreateInfo svgLayoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &textDescriptorSetLayout_,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &svgPushConstantRange,
+    };
+    require(vkCreatePipelineLayout(device_, &svgLayoutInfo, nullptr, &svgPipelineLayout_), "failed to create SVG pipeline layout");
+
     const VkPipelineColorBlendAttachmentState opaqueBlend{
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
@@ -773,6 +1032,7 @@ void VulkanRenderer::createPipelines()
     };
     sdfPipeline_ = createPipeline("sdf.vert.spv", "sdf.frag.spv", sdfPipelineLayout_, alphaBlend);
     textPipeline_ = createPipeline("text.vert.spv", "text.frag.spv", textPipelineLayout_, alphaBlend);
+    svgPipeline_ = createPipeline("svg.vert.spv", "svg.frag.spv", svgPipelineLayout_, alphaBlend);
 }
 
 void VulkanRenderer::createFramebuffers()
@@ -835,7 +1095,7 @@ void VulkanRenderer::createCommandBuffers()
 
 void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer)
 {
-    constexpr VkClearValue clearColor{{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    constexpr VkClearValue clearColor{{{0.020289f, 0.027321f, 0.033105f, 1.0f}}};
     const VkRenderPassBeginInfo renderPassInfo{
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = renderPass_,
@@ -887,6 +1147,30 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                 }
             };
 
+            const auto drawSvg = [&]() {
+                const auto svg = svgDraws_.find(primitive.id);
+                if (svg == svgDraws_.end() || svgDescriptorSet_ == VK_NULL_HANDLE) {
+                    return;
+                }
+
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, svgPipeline_);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, svgPipelineLayout_, 0, 1, &svgDescriptorSet_, 0, nullptr);
+                const SvgDraw& draw = svg->second;
+                const SvgPushConstants push{
+                    .rect = {draw.rect[0], draw.rect[1], draw.rect[2], draw.rect[3]},
+                    .uv = {draw.uv[0], draw.uv[1], draw.uv[2], draw.uv[3]},
+                    .color = {draw.color.r, draw.color.g, draw.color.b, draw.color.a},
+                    .params = {
+                        draw.mode,
+                        static_cast<float>(swapchainExtent_.width),
+                        static_cast<float>(swapchainExtent_.height),
+                        0.0f,
+                    },
+                };
+                vkCmdPushConstants(commandBuffer, svgPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+                vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+            };
+
             if (const auto* textField = std::get_if<TextFieldPrimitive>(&primitive.geometry)) {
                 drawSdf(Primitive::roundedRect(
                     {
@@ -916,8 +1200,33 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                         {.fill = textField->caretColor});
                     drawSdf(caret);
                 }
+            } else if (const auto* button = std::get_if<ButtonPrimitive>(&primitive.geometry)) {
+                PrimitiveStyle buttonStyle = primitive.style;
+                if (!button->enabled) {
+                    buttonStyle.fill = button->disabledFill;
+                } else if (button->pressed) {
+                    buttonStyle.fill = button->pressedFill;
+                    buttonStyle.stroke = button->pressedStroke;
+                } else if (button->hovered) {
+                    buttonStyle.fill = button->hoverFill;
+                    buttonStyle.stroke = button->hoverStroke;
+                }
+
+                drawSdf(Primitive::roundedRect(
+                    {
+                        .x = button->x,
+                        .y = button->y,
+                        .width = button->width,
+                        .height = button->height,
+                        .radius = button->radius,
+                    },
+                    buttonStyle));
+                drawSvg();
+                drawText();
             } else if (std::holds_alternative<TextPrimitive>(primitive.geometry)) {
                 drawText();
+            } else if (std::holds_alternative<SvgPrimitive>(primitive.geometry)) {
+                drawSvg();
             } else {
                 drawSdf(primitive);
             }
@@ -965,8 +1274,9 @@ void VulkanRenderer::rebuildTextAtlas()
     std::uint32_t atlasHeight = 64;
     std::vector<std::uint8_t> atlas(atlasWidth * atlasHeight, 0);
     std::map<GlyphKey, CachedGlyph> glyphCache;
-    std::uint32_t cursorX = 1;
-    std::uint32_t cursorY = 1;
+    constexpr std::uint32_t glyphPadding = 2;
+    std::uint32_t cursorX = glyphPadding;
+    std::uint32_t cursorY = glyphPadding;
     std::uint32_t rowHeight = 0;
     bool hasVisibleGlyph = false;
 
@@ -1005,13 +1315,13 @@ void VulkanRenderer::rebuildTextAtlas()
         };
 
         if (cached.bitmap.width > 0 && cached.bitmap.height > 0) {
-            if (cursorX + cached.bitmap.width + 1 > atlasWidth) {
-                cursorX = 1;
-                cursorY += rowHeight + 1;
+            if (cursorX + cached.bitmap.width + glyphPadding > atlasWidth) {
+                cursorX = glyphPadding;
+                cursorY += rowHeight + glyphPadding;
                 rowHeight = 0;
             }
 
-            ensureAtlasHeight(cursorY + cached.bitmap.height + 1);
+            ensureAtlasHeight(cursorY + cached.bitmap.height + glyphPadding);
             cached.atlasX = cursorX;
             cached.atlasY = cursorY;
 
@@ -1022,7 +1332,7 @@ void VulkanRenderer::rebuildTextAtlas()
                     cached.bitmap.width);
             }
 
-            cursorX += cached.bitmap.width + 1;
+            cursorX += cached.bitmap.width + glyphPadding;
             rowHeight = std::max(rowHeight, cached.bitmap.height);
             hasVisibleGlyph = true;
         }
@@ -1039,7 +1349,8 @@ void VulkanRenderer::rebuildTextAtlas()
                                 float fontSize,
                                 Color color,
                                 float maxX = std::numeric_limits<float>::max(),
-                                std::optional<std::size_t> caretCodepointIndex = std::nullopt) {
+                                std::optional<std::size_t> caretCodepointIndex = std::nullopt,
+                                std::optional<float> centerInWidth = std::nullopt) {
         const std::uint32_t pixelSize = std::max(1u, static_cast<std::uint32_t>(fontSize + 0.5f));
         const float lineHeight = fontSize * 1.25f;
         const float originX = x;
@@ -1070,8 +1381,8 @@ void VulkanRenderer::rebuildTextAtlas()
 
             const GlyphBitmap& bitmap = glyph->bitmap;
             if (bitmap.width > 0 && bitmap.height > 0) {
-                const float glyphX = penX + static_cast<float>(bitmap.bearingX);
-                const float glyphY = baseline - static_cast<float>(bitmap.bearingY);
+                const float glyphX = snapPixel(penX + static_cast<float>(bitmap.bearingX));
+                const float glyphY = snapPixel(baseline - static_cast<float>(bitmap.bearingY));
                 if (glyphX + static_cast<float>(bitmap.width) <= maxX) {
                     draws.push_back({
                         .rect = {glyphX, glyphY, static_cast<float>(bitmap.width), static_cast<float>(bitmap.height)},
@@ -1099,6 +1410,20 @@ void VulkanRenderer::rebuildTextAtlas()
         if (caretCodepointIndex && textCaretX_.find(id) == textCaretX_.end()) {
             textCaretX_[id] = penX;
         }
+
+        if (centerInWidth && !draws.empty()) {
+            float left = std::numeric_limits<float>::max();
+            float right = 0.0f;
+            for (const TextGlyphDraw& draw : draws) {
+                left = std::min(left, draw.rect[0]);
+                right = std::max(right, draw.rect[0] + draw.rect[2]);
+            }
+
+            const float offset = std::max(0.0f, (*centerInWidth - (right - left)) * 0.5f) - (left - x);
+            for (TextGlyphDraw& draw : draws) {
+                draw.rect[0] = snapPixel(draw.rect[0] + offset);
+            }
+        }
     };
 
     for (const Primitive& primitive : primitives_) {
@@ -1120,6 +1445,29 @@ void VulkanRenderer::rebuildTextAtlas()
                 showingPlaceholder ? textField->placeholderColor : textField->textColor,
                 textField->x + textField->width - textField->padding,
                 showingPlaceholder ? std::nullopt : std::optional<std::size_t>{textField->caretCodepointIndex});
+        } else if (const auto* button = std::get_if<ButtonPrimitive>(&primitive.geometry)) {
+            Color labelColor = button->labelColor;
+            if (!button->enabled) {
+                labelColor = button->disabledLabelColor;
+            } else if (button->pressed) {
+                labelColor = button->pressedLabelColor;
+            } else if (button->hovered) {
+                labelColor = button->hoverLabelColor;
+            }
+
+            const bool hasIcon = !button->iconSvg.empty() && button->iconSize > 0.0f;
+            const float labelOffset = hasIcon ? button->iconSize + button->iconGap : 0.0f;
+            layoutText(
+                primitive.id,
+                button->label,
+                button->fontFamilies,
+                button->x + button->padding + labelOffset,
+                button->y + std::max(0.0f, (button->height - button->fontSize * 1.25f) * 0.5f),
+                button->fontSize,
+                labelColor,
+                button->x + button->width - button->padding,
+                std::nullopt,
+                button->centerLabel ? std::optional<float>{std::max(0.0f, button->width - button->padding * 2.0f - labelOffset)} : std::nullopt);
         }
     }
 
@@ -1260,11 +1608,14 @@ void VulkanRenderer::rebuildTextAtlas()
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = VK_FILTER_LINEAR,
         .minFilter = VK_FILTER_LINEAR,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .mipLodBias = 0.0f,
         .maxAnisotropy = 1.0f,
+        .minLod = 0.0f,
+        .maxLod = 0.0f,
     };
     require(vkCreateSampler(device_, &samplerInfo, nullptr, &textAtlasSampler_), "failed to create text atlas sampler");
 
@@ -1304,6 +1655,329 @@ void VulkanRenderer::rebuildTextAtlas()
     vkUpdateDescriptorSets(device_, 1, &descriptorWrite, 0, nullptr);
 }
 
+void VulkanRenderer::rebuildSvgAtlas()
+{
+    cleanupSvgAtlas();
+    svgDraws_.clear();
+
+    struct CachedSvg {
+        SvgBitmap bitmap;
+        std::uint32_t atlasX = 0;
+        std::uint32_t atlasY = 0;
+        SvgRenderMode renderMode = SvgRenderMode::Color;
+    };
+
+    constexpr std::uint32_t atlasWidth = 2048;
+    constexpr std::uint32_t padding = 2;
+    std::uint32_t atlasHeight = 64;
+    std::vector<std::uint8_t> atlas(atlasWidth * atlasHeight * 4, 0);
+    std::vector<std::pair<PrimitiveId, CachedSvg>> svgs;
+    std::uint32_t cursorX = padding;
+    std::uint32_t cursorY = padding;
+    std::uint32_t rowHeight = 0;
+
+    const auto ensureAtlasHeight = [&](std::uint32_t requiredHeight) {
+        if (requiredHeight <= atlasHeight) {
+            return;
+        }
+
+        std::uint32_t newHeight = atlasHeight;
+        while (newHeight < requiredHeight) {
+            newHeight *= 2;
+        }
+
+        std::vector<std::uint8_t> resized(atlasWidth * newHeight * 4, 0);
+        for (std::uint32_t y = 0; y < atlasHeight; ++y) {
+            std::memcpy(resized.data() + y * atlasWidth * 4, atlas.data() + y * atlasWidth * 4, atlasWidth * 4);
+        }
+        atlas = std::move(resized);
+        atlasHeight = newHeight;
+    };
+
+    const auto packSvg = [&](CachedSvg& cached) {
+        if (cursorX + cached.bitmap.width + padding > atlasWidth) {
+            cursorX = padding;
+            cursorY += rowHeight + padding;
+            rowHeight = 0;
+        }
+
+        ensureAtlasHeight(cursorY + cached.bitmap.height + padding);
+        cached.atlasX = cursorX;
+        cached.atlasY = cursorY;
+
+        for (std::uint32_t y = 0; y < cached.bitmap.height; ++y) {
+            std::memcpy(
+                atlas.data() + ((cached.atlasY + y) * atlasWidth + cached.atlasX) * 4,
+                cached.bitmap.rgba.data() + y * cached.bitmap.width * 4,
+                cached.bitmap.width * 4);
+        }
+
+        cursorX += cached.bitmap.width + padding;
+        rowHeight = std::max(rowHeight, cached.bitmap.height);
+    };
+
+    const auto addSvgDraw = [&](PrimitiveId id, SvgPrimitive svg, Color color) {
+        if (svg.source.empty()) {
+            return;
+        }
+
+        CachedSvg cached{
+            .bitmap = renderSvgBitmap(svg),
+            .renderMode = svg.renderMode,
+        };
+        if (cached.bitmap.width == 0 || cached.bitmap.height == 0) {
+            return;
+        }
+
+        if (cached.renderMode == SvgRenderMode::Sdf) {
+            convertSvgAlphaToSdf(cached.bitmap, svg.sdfSpread);
+        } else if (svg.rasterScale > 1.0f && svg.width > 0.0f && svg.height > 0.0f) {
+            const auto targetWidth = std::max(1u, static_cast<std::uint32_t>(svg.width + 0.5f));
+            const auto targetHeight = std::max(1u, static_cast<std::uint32_t>(svg.height + 0.5f));
+            cached.bitmap = downsampleSvgBitmap(cached.bitmap, targetWidth, targetHeight);
+        }
+
+        if (cached.bitmap.width + padding * 2 > atlasWidth) {
+            throw std::runtime_error("SVG is wider than the SVG atlas");
+        }
+
+        packSvg(cached);
+
+        const float drawWidth = svg.width > 0.0f ? svg.width : static_cast<float>(cached.bitmap.width);
+        const float drawHeight = svg.height > 0.0f ? svg.height : static_cast<float>(cached.bitmap.height);
+        svgDraws_[id] = {
+            .rect = {svg.x, svg.y, drawWidth, drawHeight},
+            .uv = {
+                static_cast<float>(cached.atlasX) / static_cast<float>(atlasWidth),
+                static_cast<float>(cached.atlasY) / static_cast<float>(atlasHeight),
+                static_cast<float>(cached.bitmap.width) / static_cast<float>(atlasWidth),
+                static_cast<float>(cached.bitmap.height) / static_cast<float>(atlasHeight),
+            },
+            .color = cached.renderMode == SvgRenderMode::Color ? Color{1.0f, 1.0f, 1.0f, color.a} : color,
+            .mode = cached.renderMode == SvgRenderMode::Sdf ? 1.0f : (cached.renderMode == SvgRenderMode::Mask ? 2.0f : 0.0f),
+        };
+        svgs.emplace_back(id, std::move(cached));
+    };
+
+    for (const Primitive& primitive : primitives_) {
+        if (!primitive.visible) {
+            continue;
+        }
+
+        if (const auto* svg = std::get_if<SvgPrimitive>(&primitive.geometry)) {
+            addSvgDraw(primitive.id, *svg, primitive.style.fill);
+        } else if (const auto* button = std::get_if<ButtonPrimitive>(&primitive.geometry)) {
+            if (button->iconSvg.empty() || button->iconSize <= 0.0f) {
+                continue;
+            }
+
+            addSvgDraw(
+                primitive.id,
+                {
+                    .x = button->x + button->padding,
+                    .y = button->y + std::max(0.0f, (button->height - button->iconSize) * 0.5f),
+                    .width = button->iconSize,
+                    .height = button->iconSize,
+                    .rasterScale = 4.0f,
+                    .source = button->iconSvg,
+                    .sourceType = SvgSourceType::Data,
+                    .renderMode = SvgRenderMode::Mask,
+                },
+                button->iconColor);
+        }
+    }
+
+    if (svgs.empty()) {
+        return;
+    }
+
+    svgAtlasWidth_ = atlasWidth;
+    svgAtlasHeight_ = atlasHeight;
+    for (const auto& [id, cached] : svgs) {
+        SvgDraw& draw = svgDraws_[id];
+        draw.uv[0] = static_cast<float>(cached.atlasX) / static_cast<float>(svgAtlasWidth_);
+        draw.uv[1] = static_cast<float>(cached.atlasY) / static_cast<float>(svgAtlasHeight_);
+        draw.uv[2] = static_cast<float>(cached.bitmap.width) / static_cast<float>(svgAtlasWidth_);
+        draw.uv[3] = static_cast<float>(cached.bitmap.height) / static_cast<float>(svgAtlasHeight_);
+    }
+
+    const VkDeviceSize uploadSize = atlas.size();
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+
+    const VkBufferCreateInfo bufferInfo{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = uploadSize,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    require(vkCreateBuffer(device_, &bufferInfo, nullptr, &stagingBuffer), "failed to create SVG staging buffer");
+
+    VkMemoryRequirements bufferRequirements{};
+    vkGetBufferMemoryRequirements(device_, stagingBuffer, &bufferRequirements);
+    const VkMemoryAllocateInfo bufferAlloc{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = bufferRequirements.size,
+        .memoryTypeIndex = findMemoryType(bufferRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+    require(vkAllocateMemory(device_, &bufferAlloc, nullptr, &stagingMemory), "failed to allocate SVG staging memory");
+    vkBindBufferMemory(device_, stagingBuffer, stagingMemory, 0);
+
+    void* mapped = nullptr;
+    vkMapMemory(device_, stagingMemory, 0, uploadSize, 0, &mapped);
+    std::memcpy(mapped, atlas.data(), uploadSize);
+    vkUnmapMemory(device_, stagingMemory);
+
+    const VkImageCreateInfo imageInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = {svgAtlasWidth_, svgAtlasHeight_, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    require(vkCreateImage(device_, &imageInfo, nullptr, &svgAtlasImage_), "failed to create SVG atlas image");
+
+    VkMemoryRequirements imageRequirements{};
+    vkGetImageMemoryRequirements(device_, svgAtlasImage_, &imageRequirements);
+    const VkMemoryAllocateInfo imageAlloc{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = imageRequirements.size,
+        .memoryTypeIndex = findMemoryType(imageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+    require(vkAllocateMemory(device_, &imageAlloc, nullptr, &svgAtlasMemory_), "failed to allocate SVG atlas memory");
+    vkBindImageMemory(device_, svgAtlasImage_, svgAtlasMemory_, 0);
+
+    const VkCommandBufferAllocateInfo commandAlloc{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = commandPool_,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    require(vkAllocateCommandBuffers(device_, &commandAlloc, &commandBuffer), "failed to allocate SVG upload command buffer");
+
+    const VkCommandBufferBeginInfo beginInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    require(vkBeginCommandBuffer(commandBuffer, &beginInfo), "failed to begin SVG upload command buffer");
+
+    const VkImageMemoryBarrier toTransfer{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = svgAtlasImage_,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+    const VkBufferImageCopy copyRegion{
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {svgAtlasWidth_, svgAtlasHeight_, 1},
+    };
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, svgAtlasImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+    const VkImageMemoryBarrier toShaderRead{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = svgAtlasImage_,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toShaderRead);
+
+    require(vkEndCommandBuffer(commandBuffer), "failed to record SVG upload command buffer");
+
+    const VkSubmitInfo submitInfo{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &commandBuffer,
+    };
+    require(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE), "failed to submit SVG upload");
+    vkQueueWaitIdle(graphicsQueue_);
+
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+    vkDestroyBuffer(device_, stagingBuffer, nullptr);
+    vkFreeMemory(device_, stagingMemory, nullptr);
+
+    const VkImageViewCreateInfo viewInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = svgAtlasImage_,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    require(vkCreateImageView(device_, &viewInfo, nullptr, &svgAtlasView_), "failed to create SVG atlas view");
+
+    const VkSamplerCreateInfo samplerInfo{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .mipLodBias = 0.0f,
+        .maxAnisotropy = 1.0f,
+        .minLod = 0.0f,
+        .maxLod = 0.0f,
+    };
+    require(vkCreateSampler(device_, &samplerInfo, nullptr, &svgAtlasSampler_), "failed to create SVG atlas sampler");
+
+    const VkDescriptorPoolSize poolSize{
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+    };
+    const VkDescriptorPoolCreateInfo poolInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &poolSize,
+    };
+    require(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &svgDescriptorPool_), "failed to create SVG descriptor pool");
+
+    const VkDescriptorSetAllocateInfo descriptorAlloc{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = svgDescriptorPool_,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &textDescriptorSetLayout_,
+    };
+    require(vkAllocateDescriptorSets(device_, &descriptorAlloc, &svgDescriptorSet_), "failed to allocate SVG descriptor set");
+
+    const VkDescriptorImageInfo descriptorImage{
+        .sampler = svgAtlasSampler_,
+        .imageView = svgAtlasView_,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    const VkWriteDescriptorSet descriptorWrite{
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = svgDescriptorSet_,
+        .dstBinding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &descriptorImage,
+    };
+    vkUpdateDescriptorSets(device_, 1, &descriptorWrite, 0, nullptr);
+}
+
 void VulkanRenderer::cleanupSwapchain()
 {
     if (!commandBuffers_.empty()) {
@@ -1320,6 +1994,10 @@ void VulkanRenderer::cleanupSwapchain()
     textPipeline_ = VK_NULL_HANDLE;
     vkDestroyPipelineLayout(device_, textPipelineLayout_, nullptr);
     textPipelineLayout_ = VK_NULL_HANDLE;
+    vkDestroyPipeline(device_, svgPipeline_, nullptr);
+    svgPipeline_ = VK_NULL_HANDLE;
+    vkDestroyPipelineLayout(device_, svgPipelineLayout_, nullptr);
+    svgPipelineLayout_ = VK_NULL_HANDLE;
     vkDestroyPipeline(device_, sdfPipeline_, nullptr);
     sdfPipeline_ = VK_NULL_HANDLE;
     vkDestroyPipelineLayout(device_, sdfPipelineLayout_, nullptr);
@@ -1366,6 +2044,34 @@ void VulkanRenderer::cleanupTextAtlas()
 
     textAtlasWidth_ = 0;
     textAtlasHeight_ = 0;
+}
+
+void VulkanRenderer::cleanupSvgAtlas()
+{
+    if (svgDescriptorPool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device_, svgDescriptorPool_, nullptr);
+        svgDescriptorPool_ = VK_NULL_HANDLE;
+        svgDescriptorSet_ = VK_NULL_HANDLE;
+    }
+    if (svgAtlasSampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device_, svgAtlasSampler_, nullptr);
+        svgAtlasSampler_ = VK_NULL_HANDLE;
+    }
+    if (svgAtlasView_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(device_, svgAtlasView_, nullptr);
+        svgAtlasView_ = VK_NULL_HANDLE;
+    }
+    if (svgAtlasImage_ != VK_NULL_HANDLE) {
+        vkDestroyImage(device_, svgAtlasImage_, nullptr);
+        svgAtlasImage_ = VK_NULL_HANDLE;
+    }
+    if (svgAtlasMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, svgAtlasMemory_, nullptr);
+        svgAtlasMemory_ = VK_NULL_HANDLE;
+    }
+
+    svgAtlasWidth_ = 0;
+    svgAtlasHeight_ = 0;
 }
 
 VulkanRenderer::QueueFamily VulkanRenderer::findGraphicsPresentQueue(VkPhysicalDevice device) const
