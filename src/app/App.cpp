@@ -120,9 +120,9 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
     const float addSongsY = helpY - sidebarButtonGap - sidebarButtonHeight;
     primitives.add(Primitive::line(
         {
-            .x0 = sidebarPadding,
+            .x0 = 0.0f,
             .y0 = addSongsY - sidebarPadding,
-            .x1 = sidebarWidth - sidebarPadding,
+            .x1 = sidebarWidth,
             .y1 = addSongsY - sidebarPadding,
             .thickness = 1.0f,
         },
