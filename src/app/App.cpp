@@ -42,14 +42,17 @@ bool contains(const ButtonPrimitive& button, float x, float y)
         && y >= button.y && y <= button.y + button.height;
 }
 
-void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
+} // namespace
+
+void App::buildInitialScene(float windowHeight)
 {
     constexpr float sidebarWidth = 280.0f;
     constexpr float sidebarPadding = 16.0f;
     constexpr float sidebarButtonHeight = 36.0f;
     constexpr float sidebarButtonGap = 4.0f;
     constexpr float sidebarButtonWidth = sidebarWidth - sidebarPadding * 2.0f;
-    constexpr float playlistButtonHeight = 48.0f;
+    constexpr float playlistButtonHeight = 56.0f;
+    constexpr float playlistButtonGap = 8.0f;
     const Color sidebarBackground = rgb(45, 53, 59);
     const Color transparent = {0.0f, 0.0f, 0.0f, 0.0f};
     const Color sidebarText = rgb(211, 198, 170);
@@ -65,7 +68,7 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
     const std::string playlistIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-music-icon lucide-list-music"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M11 19H3"/><path d="M21 16V5"/><circle cx="18" cy="16" r="3"/></svg>)";
 
     const auto addSidebarButton = [&](std::string label, std::string iconSvg, float y) {
-        primitives.add(Primitive::button(
+        primitives_.add(Primitive::button(
             {
                 .x = sidebarPadding,
                 .y = y,
@@ -95,8 +98,9 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
             }));
     };
 
-    const auto addPlaylistButton = [&](std::string label, std::string iconSvg, float y) {
-        primitives.add(Primitive::button(
+    const auto addPlaylistButton = [&](PlaylistId id, std::string label, std::string iconSvg, float y) {
+        const bool selected = selectedPlaylistId_ == id;
+        primitives_.add(Primitive::button(
             {
                 .x = sidebarPadding,
                 .y = y,
@@ -117,16 +121,19 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
                 .pressedFill = activeFill,
                 .hoverStroke = border,
                 .pressedStroke = accent,
+                .onClick = [this, id]() {
+                    selectPlaylist(id);
+                },
                 .centerLabel = false,
             },
             {
-                .fill = transparent,
-                .stroke = transparent,
+                .fill = selected ? activeFill : transparent,
+                .stroke = selected ? accent : transparent,
                 .strokeWidth = 1.0f,
             }));
     };
 
-    primitives.add(Primitive::roundedRect(
+    primitives_.add(Primitive::roundedRect(
         {
             .x = 0.0f,
             .y = 0.0f,
@@ -135,7 +142,7 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
             .radius = 0.0f,
         },
         panelStyle(sidebarBackground, 0.0f)));
-    primitives.add(Primitive::line(
+    primitives_.add(Primitive::line(
         {
             .x0 = sidebarWidth,
             .y0 = 0.0f,
@@ -149,8 +156,8 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
             .strokeWidth = 1.0f,
         }));
 
-    addPlaylistButton("All Songs", playlistIcon, sidebarPadding);
-    primitives.add(Primitive::line(
+    addPlaylistButton(0, "All Songs", playlistIcon, sidebarPadding);
+    primitives_.add(Primitive::line(
         {
             .x0 = sidebarPadding,
             .y0 = sidebarPadding + playlistButtonHeight + sidebarPadding,
@@ -164,9 +171,15 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
             .strokeWidth = 1.0f,
         }));
 
+    float playlistY = sidebarPadding + playlistButtonHeight + sidebarPadding + playlistButtonGap;
+    for (const Playlist& playlist : playlists_) {
+        addPlaylistButton(playlist.id, playlist.name, playlistIcon, playlistY);
+        playlistY += playlistButtonHeight + playlistButtonGap;
+    }
+
     const float helpY = windowHeight - sidebarPadding - sidebarButtonHeight;
     const float addSongsY = helpY - sidebarButtonGap - sidebarButtonHeight;
-    primitives.add(Primitive::line(
+    primitives_.add(Primitive::line(
         {
             .x0 = sidebarPadding,
             .y0 = addSongsY - sidebarPadding,
@@ -183,17 +196,17 @@ void buildInitialScene(PrimitiveStore& primitives, float windowHeight)
     addSidebarButton("Settings", settingsIcon, helpY);
 }
 
-} // namespace
-
 App::App()
     : window_(1280, 720, "womp")
     , renderer_(window_)
 {
-    buildInitialScene(primitives_, static_cast<float>(window_.height()));
+    addPlaylist("Recently Added");
+    addPlaylist("Favorites");
+    addPlaylist("Long Drives");
+    rebuildScene();
     window_.setPointerEventHandler([this](const WaylandWindow::PointerEvent& event) {
         handlePointerEvent(event);
     });
-    refreshPrimitives();
 }
 
 void App::run()
@@ -201,16 +214,67 @@ void App::run()
     while (window_.pollEvents()) {
         if (window_.takeResizeFlag()) {
             renderer_.recreateSwapchain();
-            primitives_.clear();
-            buildInitialScene(primitives_, static_cast<float>(window_.height()));
             pressedButton_ = 0;
-            refreshPrimitives();
+            rebuildScene();
         }
 
         renderer_.drawFrame();
     }
 
     renderer_.waitIdle();
+}
+
+App::PlaylistId App::addPlaylist(std::string name)
+{
+    const PlaylistId id = nextPlaylistId_++;
+    playlists_.push_back({
+        .id = id,
+        .name = std::move(name),
+    });
+    if (sceneReady_) {
+        rebuildScene();
+    }
+    return id;
+}
+
+bool App::removePlaylist(PlaylistId id)
+{
+    if (id == 0) {
+        return false;
+    }
+
+    const auto removed = std::erase_if(playlists_, [id](const Playlist& playlist) {
+        return playlist.id == id;
+    });
+    if (removed == 0) {
+        return false;
+    }
+
+    if (selectedPlaylistId_ == id) {
+        selectedPlaylistId_ = 0;
+    }
+
+    rebuildScene();
+    return true;
+}
+
+void App::selectPlaylist(PlaylistId id)
+{
+    if (selectedPlaylistId_ == id) {
+        return;
+    }
+
+    selectedPlaylistId_ = id;
+    rebuildScene();
+}
+
+void App::rebuildScene()
+{
+    primitives_.clear();
+    buildInitialScene(static_cast<float>(window_.height()));
+    pressedButton_ = 0;
+    sceneReady_ = true;
+    refreshPrimitives();
 }
 
 void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
