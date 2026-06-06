@@ -98,6 +98,7 @@ struct TextFieldPrimitive {
     float y = 0.0f;
     float width = 0.0f;
     float height = 0.0f;
+    float radius = 4.0f;
     float padding = 8.0f;
     float fontSize = 16.0f;
     float caretWidth = 1.0f;
@@ -109,6 +110,7 @@ struct TextFieldPrimitive {
     Color caretColor{0.05f, 0.05f, 0.05f, 1.0f};
     std::size_t caretCodepointIndex = 0;
     bool focused = false;
+    bool caretVisible = true;
 };
 
 struct ButtonPrimitive {

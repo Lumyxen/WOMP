@@ -82,8 +82,12 @@ vec4 compose(float distanceToEdge)
         float strokeAlpha = 1.0 - smoothstep(-edgeSoftness, edgeSoftness, strokeDistance);
         vec4 strokeColor = shape.stroke;
         strokeColor.a *= strokeAlpha;
-        result = mix(result, strokeColor, strokeColor.a);
-        result.a = max(result.a, strokeColor.a);
+
+        float composedAlpha = strokeColor.a + result.a * (1.0 - strokeColor.a);
+        if (composedAlpha > 0.0) {
+            result.rgb = (strokeColor.rgb * strokeColor.a + result.rgb * result.a * (1.0 - strokeColor.a)) / composedAlpha;
+        }
+        result.a = composedAlpha;
     }
 
     return result;

@@ -82,9 +82,7 @@ struct FontMatch {
     int faceIndex = 0;
 };
 
-using GlyphKey = std::tuple<std::string, int, std::uint32_t, std::uint32_t>;
-
-float snapPixel(float value)
+    float snapPixel(float value)
 {
     return std::round(value);
 }
@@ -500,6 +498,32 @@ SdfPushConstants toSdfPushConstants(const Primitive& primitive)
     return push;
 }
 
+bool includesUpdate(VulkanRenderer::PrimitiveUpdate update, VulkanRenderer::PrimitiveUpdate flag)
+{
+    return (static_cast<std::uint8_t>(update) & static_cast<std::uint8_t>(flag)) != 0;
+}
+
+Color buttonLabelColor(const ButtonPrimitive& button)
+{
+    if (!button.enabled) {
+        return button.disabledLabelColor;
+    }
+    if (button.pressed) {
+        return button.pressedLabelColor;
+    }
+    if (button.hovered) {
+        return button.hoverLabelColor;
+    }
+    return button.labelColor;
+}
+
+Color textFieldColor(const TextFieldPrimitive& textField)
+{
+    return textField.text.empty() && !textField.placeholder.empty()
+        ? textField.placeholderColor
+        : textField.textColor;
+}
+
 } // namespace
 
 VulkanRenderer::VulkanRenderer(WaylandWindow& window)
@@ -546,13 +570,17 @@ VulkanRenderer::~VulkanRenderer()
     }
 }
 
-void VulkanRenderer::setPrimitives(std::vector<Primitive> primitives)
+void VulkanRenderer::setPrimitives(std::vector<Primitive> primitives, PrimitiveUpdate update)
 {
     primitives_ = std::move(primitives);
     if (!commandBuffers_.empty() && !framebuffers_.empty()) {
-        vkDeviceWaitIdle(device_);
-        rebuildTextAtlas();
-        rebuildSvgAtlas();
+        waitForFrameIdle();
+        if (includesUpdate(update, PrimitiveUpdate::Text)) {
+            rebuildTextAtlas();
+        }
+        if (includesUpdate(update, PrimitiveUpdate::Svg)) {
+            rebuildSvgAtlas();
+        }
         createCommandBuffers();
     }
 }
@@ -566,7 +594,7 @@ void VulkanRenderer::addPrimitive(Primitive primitive)
 {
     primitives_.push_back(std::move(primitive));
     if (!commandBuffers_.empty() && !framebuffers_.empty()) {
-        vkDeviceWaitIdle(device_);
+        waitForFrameIdle();
         rebuildTextAtlas();
         rebuildSvgAtlas();
         createCommandBuffers();
@@ -576,7 +604,6 @@ void VulkanRenderer::addPrimitive(Primitive primitive)
 void VulkanRenderer::drawFrame()
 {
     require(vkWaitForFences(device_, 1, &frameInFlight_, VK_TRUE, UINT64_MAX), "failed to wait for frame fence");
-    require(vkResetFences(device_, 1, &frameInFlight_), "failed to reset frame fence");
 
     std::uint32_t imageIndex = 0;
     const VkResult acquireResult = vkAcquireNextImageKHR(
@@ -592,6 +619,7 @@ void VulkanRenderer::drawFrame()
         return;
     }
     require(acquireResult, "failed to acquire swapchain image");
+    require(vkResetFences(device_, 1, &frameInFlight_), "failed to reset frame fence");
 
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     const VkSubmitInfo submitInfo{
@@ -643,6 +671,15 @@ void VulkanRenderer::recreateSwapchain()
 void VulkanRenderer::waitIdle() const
 {
     vkDeviceWaitIdle(device_);
+}
+
+void VulkanRenderer::waitForFrameIdle() const
+{
+    if (frameInFlight_ != VK_NULL_HANDLE) {
+        require(vkWaitForFences(device_, 1, &frameInFlight_, VK_TRUE, UINT64_MAX), "failed to wait for frame fence");
+    } else {
+        vkDeviceWaitIdle(device_);
+    }
 }
 
 void VulkanRenderer::createInstance()
@@ -1122,7 +1159,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                 vkCmdDraw(commandBuffer, 6, 1, 0, 0);
             };
 
-            const auto drawText = [&]() {
+            const auto drawText = [&](std::optional<Color> colorOverride = std::nullopt) {
                 const auto glyphs = textGlyphs_.find(primitive.id);
                 if (glyphs == textGlyphs_.end() || glyphs->second.empty() || textDescriptorSet_ == VK_NULL_HANDLE) {
                     return;
@@ -1131,10 +1168,11 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline_);
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout_, 0, 1, &textDescriptorSet_, 0, nullptr);
                 for (const TextGlyphDraw& glyph : glyphs->second) {
+                    const Color color = colorOverride.value_or(glyph.color);
                     const TextPushConstants push{
                         .rect = {glyph.rect[0], glyph.rect[1], glyph.rect[2], glyph.rect[3]},
                         .uv = {glyph.uv[0], glyph.uv[1], glyph.uv[2], glyph.uv[3]},
-                        .color = {glyph.color.r, glyph.color.g, glyph.color.b, glyph.color.a},
+                        .color = {color.r, color.g, color.b, color.a},
                         .atlas = {
                             static_cast<float>(textAtlasWidth_),
                             static_cast<float>(textAtlasHeight_),
@@ -1147,7 +1185,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                 }
             };
 
-            const auto drawSvg = [&]() {
+            const auto drawSvg = [&](std::optional<Color> colorOverride = std::nullopt, std::optional<std::array<float, 4>> rectOverride = std::nullopt) {
                 const auto svg = svgDraws_.find(primitive.id);
                 if (svg == svgDraws_.end() || svgDescriptorSet_ == VK_NULL_HANDLE) {
                     return;
@@ -1156,10 +1194,28 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, svgPipeline_);
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, svgPipelineLayout_, 0, 1, &svgDescriptorSet_, 0, nullptr);
                 const SvgDraw& draw = svg->second;
+                std::array<float, 4> rect = rectOverride.value_or(std::array<float, 4>{
+                    draw.rect[0],
+                    draw.rect[1],
+                    draw.rect[2],
+                    draw.rect[3],
+                });
+                if (rect[2] <= 0.0f) {
+                    rect[2] = draw.rect[2];
+                }
+                if (rect[3] <= 0.0f) {
+                    rect[3] = draw.rect[3];
+                }
+                Color color = draw.color;
+                if (colorOverride) {
+                    color = draw.mode == 0.0f
+                        ? Color{1.0f, 1.0f, 1.0f, colorOverride->a}
+                        : *colorOverride;
+                }
                 const SvgPushConstants push{
-                    .rect = {draw.rect[0], draw.rect[1], draw.rect[2], draw.rect[3]},
+                    .rect = {rect[0], rect[1], rect[2], rect[3]},
                     .uv = {draw.uv[0], draw.uv[1], draw.uv[2], draw.uv[3]},
-                    .color = {draw.color.r, draw.color.g, draw.color.b, draw.color.a},
+                    .color = {color.r, color.g, color.b, color.a},
                     .params = {
                         draw.mode,
                         static_cast<float>(swapchainExtent_.width),
@@ -1178,12 +1234,12 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                         .y = textField->y,
                         .width = textField->width,
                         .height = textField->height,
-                        .radius = 4.0f,
+                        .radius = textField->radius,
                     },
                     primitive.style));
-                drawText();
+                drawText(textFieldColor(*textField));
 
-                if (textField->focused) {
+                if (textField->focused && textField->caretVisible) {
                     float caretX = textField->x + textField->padding;
                     const auto caretPosition = textCaretX_.find(primitive.id);
                     if (caretPosition != textCaretX_.end()) {
@@ -1221,12 +1277,28 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                         .radius = button->radius,
                     },
                     buttonStyle));
-                drawSvg();
-                drawText();
+                if (!button->iconSvg.empty() && button->iconSize > 0.0f) {
+                    drawSvg(
+                        button->iconColor,
+                        std::array<float, 4>{
+                            button->x + button->padding,
+                            button->y + std::max(0.0f, (button->height - button->iconSize) * 0.5f),
+                            button->iconSize,
+                            button->iconSize,
+                        });
+                }
+                drawText(buttonLabelColor(*button));
             } else if (std::holds_alternative<TextPrimitive>(primitive.geometry)) {
-                drawText();
-            } else if (std::holds_alternative<SvgPrimitive>(primitive.geometry)) {
-                drawSvg();
+                drawText(primitive.style.fill);
+            } else if (const auto* svg = std::get_if<SvgPrimitive>(&primitive.geometry)) {
+                drawSvg(
+                    primitive.style.fill,
+                    std::array<float, 4>{
+                        svg->x,
+                        svg->y,
+                        svg->width,
+                        svg->height,
+                    });
             } else {
                 drawSdf(primitive);
             }
@@ -1273,7 +1345,8 @@ void VulkanRenderer::rebuildTextAtlas()
     constexpr std::uint32_t atlasWidth = 1024;
     std::uint32_t atlasHeight = 64;
     std::vector<std::uint8_t> atlas(atlasWidth * atlasHeight, 0);
-    std::map<GlyphKey, CachedGlyph> glyphCache;
+    using RequestedGlyphKey = std::tuple<std::vector<std::string>, std::uint32_t, std::uint32_t>;
+    std::map<RequestedGlyphKey, CachedGlyph> glyphCache;
     constexpr std::uint32_t glyphPadding = 2;
     std::uint32_t cursorX = glyphPadding;
     std::uint32_t cursorY = glyphPadding;
@@ -1299,20 +1372,16 @@ void VulkanRenderer::rebuildTextAtlas()
     };
 
     const auto cacheGlyph = [&](const std::vector<std::string>& families, std::uint32_t codepoint, std::uint32_t pixelSize) -> const CachedGlyph* {
-        const std::optional<FontMatch> font = fonts.match(families, codepoint);
-        if (!font) {
-            return nullptr;
-        }
-
-        const GlyphKey key{font->path, font->faceIndex, codepoint, pixelSize};
+        const RequestedGlyphKey key{families, codepoint, pixelSize};
         const auto existing = glyphCache.find(key);
         if (existing != glyphCache.end()) {
             return &existing->second;
         }
 
-        CachedGlyph cached{
-            .bitmap = renderGlyph(library.get(), *font, codepoint, pixelSize),
-        };
+        CachedGlyph cached{};
+        if (const std::optional<FontMatch> font = fonts.match(families, codepoint)) {
+            cached.bitmap = renderGlyph(library.get(), *font, codepoint, pixelSize);
+        }
 
         if (cached.bitmap.width > 0 && cached.bitmap.height > 0) {
             if (cursorX + cached.bitmap.width + glyphPadding > atlasWidth) {
@@ -1667,11 +1736,13 @@ void VulkanRenderer::rebuildSvgAtlas()
         SvgRenderMode renderMode = SvgRenderMode::Color;
     };
 
+    using SvgCacheKey = std::tuple<std::string, int, int, long, long, long, long>;
     constexpr std::uint32_t atlasWidth = 2048;
     constexpr std::uint32_t padding = 2;
     std::uint32_t atlasHeight = 64;
     std::vector<std::uint8_t> atlas(atlasWidth * atlasHeight * 4, 0);
-    std::vector<std::pair<PrimitiveId, CachedSvg>> svgs;
+    std::map<SvgCacheKey, CachedSvg> svgCache;
+    std::vector<std::pair<PrimitiveId, const CachedSvg*>> svgs;
     std::uint32_t cursorX = padding;
     std::uint32_t cursorY = padding;
     std::uint32_t rowHeight = 0;
@@ -1716,32 +1787,51 @@ void VulkanRenderer::rebuildSvgAtlas()
         rowHeight = std::max(rowHeight, cached.bitmap.height);
     };
 
+    const auto cacheKeyFor = [](const SvgPrimitive& svg) {
+        return SvgCacheKey{
+            svg.source,
+            static_cast<int>(svg.sourceType),
+            static_cast<int>(svg.renderMode),
+            std::lround(svg.width * 100.0f),
+            std::lround(svg.height * 100.0f),
+            std::lround(svg.rasterScale * 100.0f),
+            std::lround(svg.sdfSpread * 100.0f),
+        };
+    };
+
     const auto addSvgDraw = [&](PrimitiveId id, SvgPrimitive svg, Color color) {
         if (svg.source.empty()) {
             return;
         }
 
-        CachedSvg cached{
-            .bitmap = renderSvgBitmap(svg),
-            .renderMode = svg.renderMode,
-        };
-        if (cached.bitmap.width == 0 || cached.bitmap.height == 0) {
-            return;
+        const SvgCacheKey key = cacheKeyFor(svg);
+        auto cachedSvg = svgCache.find(key);
+        if (cachedSvg == svgCache.end()) {
+            CachedSvg cached{
+                .bitmap = renderSvgBitmap(svg),
+                .renderMode = svg.renderMode,
+            };
+            if (cached.bitmap.width == 0 || cached.bitmap.height == 0) {
+                return;
+            }
+
+            if (cached.renderMode == SvgRenderMode::Sdf) {
+                convertSvgAlphaToSdf(cached.bitmap, svg.sdfSpread);
+            } else if (svg.rasterScale > 1.0f && svg.width > 0.0f && svg.height > 0.0f) {
+                const auto targetWidth = std::max(1u, static_cast<std::uint32_t>(svg.width + 0.5f));
+                const auto targetHeight = std::max(1u, static_cast<std::uint32_t>(svg.height + 0.5f));
+                cached.bitmap = downsampleSvgBitmap(cached.bitmap, targetWidth, targetHeight);
+            }
+
+            if (cached.bitmap.width + padding * 2 > atlasWidth) {
+                throw std::runtime_error("SVG is wider than the SVG atlas");
+            }
+
+            packSvg(cached);
+            cachedSvg = svgCache.emplace(key, std::move(cached)).first;
         }
 
-        if (cached.renderMode == SvgRenderMode::Sdf) {
-            convertSvgAlphaToSdf(cached.bitmap, svg.sdfSpread);
-        } else if (svg.rasterScale > 1.0f && svg.width > 0.0f && svg.height > 0.0f) {
-            const auto targetWidth = std::max(1u, static_cast<std::uint32_t>(svg.width + 0.5f));
-            const auto targetHeight = std::max(1u, static_cast<std::uint32_t>(svg.height + 0.5f));
-            cached.bitmap = downsampleSvgBitmap(cached.bitmap, targetWidth, targetHeight);
-        }
-
-        if (cached.bitmap.width + padding * 2 > atlasWidth) {
-            throw std::runtime_error("SVG is wider than the SVG atlas");
-        }
-
-        packSvg(cached);
+        const CachedSvg& cached = cachedSvg->second;
 
         const float drawWidth = svg.width > 0.0f ? svg.width : static_cast<float>(cached.bitmap.width);
         const float drawHeight = svg.height > 0.0f ? svg.height : static_cast<float>(cached.bitmap.height);
@@ -1756,7 +1846,7 @@ void VulkanRenderer::rebuildSvgAtlas()
             .color = cached.renderMode == SvgRenderMode::Color ? Color{1.0f, 1.0f, 1.0f, color.a} : color,
             .mode = cached.renderMode == SvgRenderMode::Sdf ? 1.0f : (cached.renderMode == SvgRenderMode::Mask ? 2.0f : 0.0f),
         };
-        svgs.emplace_back(id, std::move(cached));
+        svgs.emplace_back(id, &cached);
     };
 
     for (const Primitive& primitive : primitives_) {
@@ -1795,10 +1885,10 @@ void VulkanRenderer::rebuildSvgAtlas()
     svgAtlasHeight_ = atlasHeight;
     for (const auto& [id, cached] : svgs) {
         SvgDraw& draw = svgDraws_[id];
-        draw.uv[0] = static_cast<float>(cached.atlasX) / static_cast<float>(svgAtlasWidth_);
-        draw.uv[1] = static_cast<float>(cached.atlasY) / static_cast<float>(svgAtlasHeight_);
-        draw.uv[2] = static_cast<float>(cached.bitmap.width) / static_cast<float>(svgAtlasWidth_);
-        draw.uv[3] = static_cast<float>(cached.bitmap.height) / static_cast<float>(svgAtlasHeight_);
+        draw.uv[0] = static_cast<float>(cached->atlasX) / static_cast<float>(svgAtlasWidth_);
+        draw.uv[1] = static_cast<float>(cached->atlasY) / static_cast<float>(svgAtlasHeight_);
+        draw.uv[2] = static_cast<float>(cached->bitmap.width) / static_cast<float>(svgAtlasWidth_);
+        draw.uv[3] = static_cast<float>(cached->bitmap.height) / static_cast<float>(svgAtlasHeight_);
     }
 
     const VkDeviceSize uploadSize = atlas.size();

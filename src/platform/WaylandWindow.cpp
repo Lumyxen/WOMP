@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <unistd.h>
 #include <utility>
 
 namespace womp {
@@ -48,6 +49,15 @@ constexpr wl_pointer_listener pointerListener{
     .axis_source = WaylandWindow::pointerAxisSource,
     .axis_stop = WaylandWindow::pointerAxisStop,
     .axis_discrete = WaylandWindow::pointerAxisDiscrete,
+};
+
+constexpr wl_keyboard_listener keyboardListener{
+    .keymap = WaylandWindow::keyboardKeymap,
+    .enter = WaylandWindow::keyboardEnter,
+    .leave = WaylandWindow::keyboardLeave,
+    .key = WaylandWindow::keyboardKey,
+    .modifiers = WaylandWindow::keyboardModifiers,
+    .repeat_info = WaylandWindow::keyboardRepeatInfo,
 };
 
 } // namespace
@@ -97,6 +107,9 @@ WaylandWindow::~WaylandWindow()
     if (pointer_ != nullptr) {
         wl_pointer_destroy(pointer_);
     }
+    if (keyboard_ != nullptr) {
+        wl_keyboard_destroy(keyboard_);
+    }
     if (cursorSurface_ != nullptr) {
         wl_surface_destroy(cursorSurface_);
     }
@@ -120,12 +133,31 @@ WaylandWindow::~WaylandWindow()
     }
 }
 
-bool WaylandWindow::pollEvents()
+bool WaylandWindow::pollEvents(std::int32_t timeoutMilliseconds)
 {
-    wl_display_dispatch_pending(display_);
+    const auto dispatchPending = [this]() {
+        const int dispatched = wl_display_dispatch_pending(display_);
+        return dispatched >= 0 ? dispatched : -1;
+    };
+
+    int dispatched = dispatchPending();
+    if (dispatched < 0) {
+        return false;
+    }
+    if (dispatched > 0) {
+        wl_display_flush(display_);
+        return !shouldClose_;
+    }
 
     while (wl_display_prepare_read(display_) != 0) {
-        wl_display_dispatch_pending(display_);
+        dispatched = dispatchPending();
+        if (dispatched < 0) {
+            return false;
+        }
+        if (dispatched > 0) {
+            wl_display_flush(display_);
+            return !shouldClose_;
+        }
     }
 
     wl_display_flush(display_);
@@ -136,7 +168,7 @@ bool WaylandWindow::pollEvents()
         .revents = 0,
     };
 
-    if (poll(&descriptor, 1, 0) > 0 && (descriptor.revents & POLLIN) != 0) {
+    if (poll(&descriptor, 1, timeoutMilliseconds) > 0 && (descriptor.revents & POLLIN) != 0) {
         if (wl_display_read_events(display_) == -1) {
             return false;
         }
@@ -144,7 +176,9 @@ bool WaylandWindow::pollEvents()
         wl_display_cancel_read(display_);
     }
 
-    wl_display_dispatch_pending(display_);
+    if (dispatchPending() < 0) {
+        return false;
+    }
     return !shouldClose_;
 }
 
@@ -160,8 +194,17 @@ void WaylandWindow::setPointerEventHandler(std::function<void(const PointerEvent
     pointerEventHandler_ = std::move(handler);
 }
 
+void WaylandWindow::setKeyEventHandler(std::function<void(const KeyEvent&)> handler)
+{
+    keyEventHandler_ = std::move(handler);
+}
+
 void WaylandWindow::setCursor(CursorShape shape)
 {
+    if (shape == cursorShape_ && cursorSerial_ == pointerEnterSerial_) {
+        return;
+    }
+
     cursorShape_ = shape;
 
     if (pointer_ == nullptr || cursorSurface_ == nullptr || pointerEnterSerial_ == 0) {
@@ -188,6 +231,7 @@ void WaylandWindow::setCursor(CursorShape shape)
     wl_surface_attach(cursorSurface_, buffer, 0, 0);
     wl_surface_damage_buffer(cursorSurface_, 0, 0, static_cast<std::int32_t>(image->width), static_cast<std::int32_t>(image->height));
     wl_surface_commit(cursorSurface_);
+    cursorSerial_ = pointerEnterSerial_;
 }
 
 void WaylandWindow::registryGlobal(
@@ -250,13 +294,9 @@ void WaylandWindow::xdgToplevelConfigure(
 {
     auto* window = static_cast<WaylandWindow*>(data);
 
-    // Zero means the compositor leaves this dimension to the client.
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    const auto newWidth = static_cast<std::uint32_t>(width);
-    const auto newHeight = static_cast<std::uint32_t>(height);
+    // Zero means the compositor leaves that dimension to the client.
+    const auto newWidth = width > 0 ? static_cast<std::uint32_t>(width) : window->width_;
+    const auto newHeight = height > 0 ? static_cast<std::uint32_t>(height) : window->height_;
     if (newWidth != window->width_ || newHeight != window->height_) {
         window->width_ = newWidth;
         window->height_ = newHeight;
@@ -273,6 +313,7 @@ void WaylandWindow::seatCapabilities(void* data, wl_seat* seat, std::uint32_t ca
 {
     auto* window = static_cast<WaylandWindow*>(data);
     const bool hasPointer = (capabilities & WL_SEAT_CAPABILITY_POINTER) != 0;
+    const bool hasKeyboard = (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0;
 
     if (hasPointer && window->pointer_ == nullptr) {
         window->pointer_ = wl_seat_get_pointer(seat);
@@ -282,6 +323,14 @@ void WaylandWindow::seatCapabilities(void* data, wl_seat* seat, std::uint32_t ca
         wl_pointer_destroy(window->pointer_);
         window->pointer_ = nullptr;
         window->emitPointerEvent({.type = PointerEventType::Leave, .x = window->pointerX_, .y = window->pointerY_});
+    }
+
+    if (hasKeyboard && window->keyboard_ == nullptr) {
+        window->keyboard_ = wl_seat_get_keyboard(seat);
+        wl_keyboard_add_listener(window->keyboard_, &keyboardListener, window);
+    } else if (!hasKeyboard && window->keyboard_ != nullptr) {
+        wl_keyboard_destroy(window->keyboard_);
+        window->keyboard_ = nullptr;
     }
 }
 
@@ -309,6 +358,7 @@ void WaylandWindow::pointerLeave(void* data, wl_pointer*, std::uint32_t, wl_surf
 {
     auto* window = static_cast<WaylandWindow*>(data);
     window->pointerEnterSerial_ = 0;
+    window->cursorSerial_ = 0;
     window->emitPointerEvent({.type = PointerEventType::Leave, .x = window->pointerX_, .y = window->pointerY_});
 }
 
@@ -341,8 +391,19 @@ void WaylandWindow::pointerButton(
     });
 }
 
-void WaylandWindow::pointerAxis(void*, wl_pointer*, std::uint32_t, std::uint32_t, wl_fixed_t)
+void WaylandWindow::pointerAxis(void* data, wl_pointer*, std::uint32_t, std::uint32_t axis, wl_fixed_t value)
 {
+    auto* window = static_cast<WaylandWindow*>(data);
+    if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL) {
+        return;
+    }
+
+    window->emitPointerEvent({
+        .type = PointerEventType::Scroll,
+        .x = window->pointerX_,
+        .y = window->pointerY_,
+        .scrollY = static_cast<float>(wl_fixed_to_double(value)),
+    });
 }
 
 void WaylandWindow::pointerFrame(void*, wl_pointer*)
@@ -358,6 +419,44 @@ void WaylandWindow::pointerAxisStop(void*, wl_pointer*, std::uint32_t, std::uint
 }
 
 void WaylandWindow::pointerAxisDiscrete(void*, wl_pointer*, std::uint32_t, std::int32_t)
+{
+}
+
+void WaylandWindow::keyboardKeymap(void*, wl_keyboard*, std::uint32_t, std::int32_t fd, std::uint32_t)
+{
+    close(fd);
+}
+
+void WaylandWindow::keyboardEnter(void*, wl_keyboard*, std::uint32_t, wl_surface*, wl_array*)
+{
+}
+
+void WaylandWindow::keyboardLeave(void*, wl_keyboard*, std::uint32_t, wl_surface*)
+{
+}
+
+void WaylandWindow::keyboardKey(
+    void* data,
+    wl_keyboard*,
+    std::uint32_t,
+    std::uint32_t,
+    std::uint32_t key,
+    std::uint32_t state)
+{
+    auto* window = static_cast<WaylandWindow*>(data);
+    if (window->keyEventHandler_) {
+        window->keyEventHandler_({
+            .type = state == WL_KEYBOARD_KEY_STATE_PRESSED ? KeyEventType::Press : KeyEventType::Release,
+            .key = key,
+        });
+    }
+}
+
+void WaylandWindow::keyboardModifiers(void*, wl_keyboard*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t)
+{
+}
+
+void WaylandWindow::keyboardRepeatInfo(void*, wl_keyboard*, std::int32_t, std::int32_t)
 {
 }
 

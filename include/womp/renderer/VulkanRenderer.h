@@ -13,13 +13,20 @@ namespace womp {
 
 class VulkanRenderer {
 public:
+    enum class PrimitiveUpdate : std::uint8_t {
+        DrawOnly = 0,
+        Text = 1,
+        Svg = 2,
+        Full = 3,
+    };
+
     explicit VulkanRenderer(WaylandWindow& window);
     ~VulkanRenderer();
 
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    void setPrimitives(std::vector<Primitive> primitives);
+    void setPrimitives(std::vector<Primitive> primitives, PrimitiveUpdate update = PrimitiveUpdate::Full);
     void clearPrimitives();
     void addPrimitive(Primitive primitive);
 
@@ -49,6 +56,7 @@ private:
     void recordCommandBuffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer);
     void rebuildTextAtlas();
     void rebuildSvgAtlas();
+    void waitForFrameIdle() const;
 
     void cleanupSwapchain();
     void cleanupTextAtlas();

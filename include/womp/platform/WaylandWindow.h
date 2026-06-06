@@ -25,13 +25,25 @@ public:
         Leave,
         ButtonPress,
         ButtonRelease,
+        Scroll,
     };
 
     struct PointerEvent {
         PointerEventType type = PointerEventType::Move;
         float x = 0.0f;
         float y = 0.0f;
+        float scrollY = 0.0f;
         std::uint32_t button = 0;
+    };
+
+    enum class KeyEventType {
+        Press,
+        Release,
+    };
+
+    struct KeyEvent {
+        KeyEventType type = KeyEventType::Press;
+        std::uint32_t key = 0;
     };
 
     WaylandWindow(std::uint32_t width, std::uint32_t height, const std::string& title);
@@ -40,9 +52,10 @@ public:
     WaylandWindow(const WaylandWindow&) = delete;
     WaylandWindow& operator=(const WaylandWindow&) = delete;
 
-    bool pollEvents();
+    bool pollEvents(std::int32_t timeoutMilliseconds = 0);
     bool takeResizeFlag();
     void setPointerEventHandler(std::function<void(const PointerEvent&)> handler);
+    void setKeyEventHandler(std::function<void(const KeyEvent&)> handler);
     void setCursor(CursorShape shape);
 
     wl_display* display() const { return display_; }
@@ -89,6 +102,25 @@ public:
     static void pointerAxisSource(void* data, wl_pointer* pointer, std::uint32_t axisSource);
     static void pointerAxisStop(void* data, wl_pointer* pointer, std::uint32_t time, std::uint32_t axis);
     static void pointerAxisDiscrete(void* data, wl_pointer* pointer, std::uint32_t axis, std::int32_t discrete);
+    static void keyboardKeymap(void* data, wl_keyboard* keyboard, std::uint32_t format, std::int32_t fd, std::uint32_t size);
+    static void keyboardEnter(void* data, wl_keyboard* keyboard, std::uint32_t serial, wl_surface* surface, wl_array* keys);
+    static void keyboardLeave(void* data, wl_keyboard* keyboard, std::uint32_t serial, wl_surface* surface);
+    static void keyboardKey(
+        void* data,
+        wl_keyboard* keyboard,
+        std::uint32_t serial,
+        std::uint32_t time,
+        std::uint32_t key,
+        std::uint32_t state);
+    static void keyboardModifiers(
+        void* data,
+        wl_keyboard* keyboard,
+        std::uint32_t serial,
+        std::uint32_t modsDepressed,
+        std::uint32_t modsLatched,
+        std::uint32_t modsLocked,
+        std::uint32_t group);
+    static void keyboardRepeatInfo(void* data, wl_keyboard* keyboard, std::int32_t rate, std::int32_t delay);
 
 private:
     void createShellSurface(const std::string& title);
@@ -102,6 +134,7 @@ private:
     wl_shm* shm_ = nullptr;
     wl_seat* seat_ = nullptr;
     wl_pointer* pointer_ = nullptr;
+    wl_keyboard* keyboard_ = nullptr;
     wl_cursor_theme* cursorTheme_ = nullptr;
     wl_surface* cursorSurface_ = nullptr;
     xdg_wm_base* shell_ = nullptr;
@@ -115,10 +148,12 @@ private:
     bool resized_ = false;
     bool shouldClose_ = false;
     std::uint32_t pointerEnterSerial_ = 0;
+    std::uint32_t cursorSerial_ = 0;
     float pointerX_ = 0.0f;
     float pointerY_ = 0.0f;
     CursorShape cursorShape_ = CursorShape::Default;
     std::function<void(const PointerEvent&)> pointerEventHandler_;
+    std::function<void(const KeyEvent&)> keyEventHandler_;
 };
 
 } // namespace womp
