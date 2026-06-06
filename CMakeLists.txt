@@ -14,6 +14,13 @@ pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(LIBRSVG REQUIRED IMPORTED_TARGET librsvg-2.0)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
+pkg_check_modules(SQLITE REQUIRED IMPORTED_TARGET sqlite3)
+pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET gstreamer-1.0)
+pkg_check_modules(GSTREAMER_PBUTILS REQUIRED IMPORTED_TARGET gstreamer-pbutils-1.0)
+pkg_check_modules(GSTREAMER_APP REQUIRED IMPORTED_TARGET gstreamer-app-1.0)
+pkg_check_modules(GSTREAMER_VIDEO REQUIRED IMPORTED_TARGET gstreamer-video-1.0)
+pkg_check_modules(GSTREAMER_TAG REQUIRED IMPORTED_TARGET gstreamer-tag-1.0)
+pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 
 find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -76,6 +83,39 @@ add_custom_command(
     VERBATIM
 )
 
+add_library(womp_core
+    src/library/ImportService.cpp
+    src/library/LibraryStore.cpp
+    src/mpris/MprisService.cpp
+    src/playback/AudioPlayer.cpp
+    src/playback/PlaybackQueue.cpp
+    src/playback/PlaybackStats.cpp
+)
+
+target_compile_features(womp_core PUBLIC cxx_std_23)
+target_include_directories(womp_core PUBLIC
+    include
+    "${GENERATED_DIR}"
+)
+target_link_libraries(womp_core PUBLIC
+    PkgConfig::SQLITE
+    PkgConfig::GSTREAMER
+    PkgConfig::GSTREAMER_PBUTILS
+    PkgConfig::GSTREAMER_APP
+    PkgConfig::GSTREAMER_VIDEO
+    PkgConfig::GSTREAMER_TAG
+    PkgConfig::GIO
+    PkgConfig::CAIRO
+)
+set_target_properties(womp_core PROPERTIES CXX_EXTENSIONS OFF)
+
+add_library(womp_scene
+    src/scene/Primitive.cpp
+)
+target_compile_features(womp_scene PUBLIC cxx_std_23)
+target_include_directories(womp_scene PUBLIC include)
+set_target_properties(womp_scene PROPERTIES CXX_EXTENSIONS OFF)
+
 add_executable(womp
     "${EMBEDDED_SHADER_SOURCE}"
     "${GENERATED_DIR}/xdg-shell-protocol.c"
@@ -83,19 +123,14 @@ add_executable(womp
     src/main.cpp
     src/platform/WaylandWindow.cpp
     src/renderer/VulkanRenderer.cpp
-    src/scene/Primitive.cpp
 )
 
 add_dependencies(womp womp_shaders)
-
 target_compile_features(womp PRIVATE cxx_std_23)
-
-target_include_directories(womp PRIVATE
-    include
-    "${GENERATED_DIR}"
-)
-
+target_include_directories(womp PRIVATE include "${GENERATED_DIR}")
 target_link_libraries(womp PRIVATE
+    womp_core
+    womp_scene
     Vulkan::Vulkan
     PkgConfig::WAYLAND
     PkgConfig::WAYLAND_CURSOR
@@ -108,3 +143,13 @@ target_link_libraries(womp PRIVATE
 set_target_properties(womp PROPERTIES
     CXX_EXTENSIONS OFF
 )
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(womp_core_tests tests/CoreTests.cpp)
+    target_compile_features(womp_core_tests PRIVATE cxx_std_23)
+    target_link_libraries(womp_core_tests PRIVATE womp_core womp_scene)
+    set_target_properties(womp_core_tests PROPERTIES CXX_EXTENSIONS OFF)
+    add_test(NAME womp_core_tests COMMAND womp_core_tests)
+endif()

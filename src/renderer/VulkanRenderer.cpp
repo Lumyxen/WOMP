@@ -82,7 +82,7 @@ struct FontMatch {
     int faceIndex = 0;
 };
 
-    float snapPixel(float value)
+float snapPixel(float value)
 {
     return std::round(value);
 }
@@ -219,6 +219,43 @@ GlyphBitmap renderGlyph(FT_Library library, const FontMatch& font, std::uint32_t
 
     return bitmap;
 }
+
+class GlyphRasterCache {
+public:
+    GlyphRasterCache()
+    {
+        if (FT_Init_FreeType(&library_) != 0) {
+            throw std::runtime_error("failed to initialize FreeType");
+        }
+    }
+
+    ~GlyphRasterCache()
+    {
+        FT_Done_FreeType(library_);
+    }
+
+    const GlyphBitmap& get(
+        const std::vector<std::string>& families,
+        std::uint32_t codepoint,
+        std::uint32_t pixelSize)
+    {
+        const Key key{families, codepoint, pixelSize};
+        const auto [cached, inserted] = glyphs_.try_emplace(key);
+        if (inserted) {
+            if (const std::optional<FontMatch> font = fonts_.match(families, codepoint)) {
+                cached->second = renderGlyph(library_, *font, codepoint, pixelSize);
+            }
+        }
+        return cached->second;
+    }
+
+private:
+    using Key = std::tuple<std::vector<std::string>, std::uint32_t, std::uint32_t>;
+
+    FT_Library library_ = nullptr;
+    FontResolver fonts_;
+    std::map<Key, GlyphBitmap> glyphs_;
+};
 
 struct GlyphMeasurement {
     std::uint32_t width = 0;
@@ -405,6 +442,43 @@ SvgBitmap renderSvgBitmap(const SvgPrimitive& svg)
         }
     }
 
+    return bitmap;
+}
+
+SvgBitmap renderPngBitmap(const ImagePrimitive& image)
+{
+    cairo_surface_t* surface = cairo_image_surface_create_from_png(image.source.c_str());
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        throw std::runtime_error("failed to load PNG image: " + image.source);
+    }
+    cairo_surface_flush(surface);
+    const auto width = static_cast<std::uint32_t>(cairo_image_surface_get_width(surface));
+    const auto height = static_cast<std::uint32_t>(cairo_image_surface_get_height(surface));
+    const auto* source = cairo_image_surface_get_data(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    SvgBitmap bitmap{
+        .width = width,
+        .height = height,
+        .rgba = std::vector<std::uint8_t>(width * height * 4, 0),
+    };
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const std::uint8_t* src = source + y * stride;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::uint8_t b = src[x * 4 + 0];
+            const std::uint8_t g = src[x * 4 + 1];
+            const std::uint8_t r = src[x * 4 + 2];
+            const std::uint8_t a = src[x * 4 + 3];
+            std::uint8_t* dst = bitmap.rgba.data() + (y * width + x) * 4;
+            if (a != 0) {
+                dst[0] = static_cast<std::uint8_t>(std::min(255u, (static_cast<unsigned>(r) * 255u + a / 2u) / a));
+                dst[1] = static_cast<std::uint8_t>(std::min(255u, (static_cast<unsigned>(g) * 255u + a / 2u) / a));
+                dst[2] = static_cast<std::uint8_t>(std::min(255u, (static_cast<unsigned>(b) * 255u + a / 2u) / a));
+                dst[3] = a;
+            }
+        }
+    }
+    cairo_surface_destroy(surface);
     return bitmap;
 }
 
@@ -651,7 +725,7 @@ void VulkanRenderer::setPrimitives(std::vector<Primitive> primitives, PrimitiveU
         if (includesUpdate(update, PrimitiveUpdate::Text)) {
             rebuildTextAtlas();
         }
-        if (includesUpdate(update, PrimitiveUpdate::Svg)) {
+        if (includesUpdate(update, PrimitiveUpdate::Svg) || includesUpdate(update, PrimitiveUpdate::Image)) {
             rebuildSvgAtlas();
         }
         createCommandBuffers();
@@ -1446,6 +1520,10 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                         svg->width,
                         svg->height,
                     });
+            } else if (const auto* image = std::get_if<ImagePrimitive>(&primitive.geometry)) {
+                drawSvg(
+                    Color{1.0f, 1.0f, 1.0f, primitive.style.fill.a},
+                    std::array<float, 4>{image->x, image->y, image->width, image->height});
             } else {
                 drawSdf(primitive);
             }
@@ -1477,15 +1555,10 @@ void VulkanRenderer::rebuildTextAtlas()
     textCaretX_.clear();
     textSelectionX_.clear();
 
-    FT_Library rawLibrary = nullptr;
-    if (FT_Init_FreeType(&rawLibrary) != 0) {
-        throw std::runtime_error("failed to initialize FreeType");
-    }
-    auto library = std::unique_ptr<std::remove_pointer_t<FT_Library>, decltype(&FT_Done_FreeType)>(rawLibrary, FT_Done_FreeType);
-    FontResolver fonts;
+    static GlyphRasterCache rasterCache;
 
     struct CachedGlyph {
-        GlyphBitmap bitmap;
+        const GlyphBitmap* bitmap = nullptr;
         std::uint32_t atlasX = 0;
         std::uint32_t atlasY = 0;
     };
@@ -1493,8 +1566,8 @@ void VulkanRenderer::rebuildTextAtlas()
     constexpr std::uint32_t atlasWidth = 1024;
     std::uint32_t atlasHeight = 64;
     std::vector<std::uint8_t> atlas(atlasWidth * atlasHeight, 0);
-    using RequestedGlyphKey = std::tuple<std::vector<std::string>, std::uint32_t, std::uint32_t>;
-    std::map<RequestedGlyphKey, CachedGlyph> glyphCache;
+    using GlyphKey = std::tuple<std::vector<std::string>, std::uint32_t, std::uint32_t>;
+    std::map<GlyphKey, CachedGlyph> glyphCache;
     constexpr std::uint32_t glyphPadding = 2;
     std::uint32_t cursorX = glyphPadding;
     std::uint32_t cursorY = glyphPadding;
@@ -1520,37 +1593,37 @@ void VulkanRenderer::rebuildTextAtlas()
     };
 
     const auto cacheGlyph = [&](const std::vector<std::string>& families, std::uint32_t codepoint, std::uint32_t pixelSize) -> const CachedGlyph* {
-        const RequestedGlyphKey key{families, codepoint, pixelSize};
+        const GlyphKey key{families, codepoint, pixelSize};
         const auto existing = glyphCache.find(key);
         if (existing != glyphCache.end()) {
             return &existing->second;
         }
 
-        CachedGlyph cached{};
-        if (const std::optional<FontMatch> font = fonts.match(families, codepoint)) {
-            cached.bitmap = renderGlyph(library.get(), *font, codepoint, pixelSize);
-        }
+        CachedGlyph cached{
+            .bitmap = &rasterCache.get(families, codepoint, pixelSize),
+        };
+        const GlyphBitmap& bitmap = *cached.bitmap;
 
-        if (cached.bitmap.width > 0 && cached.bitmap.height > 0) {
-            if (cursorX + cached.bitmap.width + glyphPadding > atlasWidth) {
+        if (bitmap.width > 0 && bitmap.height > 0) {
+            if (cursorX + bitmap.width + glyphPadding > atlasWidth) {
                 cursorX = glyphPadding;
                 cursorY += rowHeight + glyphPadding;
                 rowHeight = 0;
             }
 
-            ensureAtlasHeight(cursorY + cached.bitmap.height + glyphPadding);
+            ensureAtlasHeight(cursorY + bitmap.height + glyphPadding);
             cached.atlasX = cursorX;
             cached.atlasY = cursorY;
 
-            for (std::uint32_t y = 0; y < cached.bitmap.height; ++y) {
+            for (std::uint32_t y = 0; y < bitmap.height; ++y) {
                 std::memcpy(
                     atlas.data() + (cached.atlasY + y) * atlasWidth + cached.atlasX,
-                    cached.bitmap.pixels.data() + y * cached.bitmap.width,
-                    cached.bitmap.width);
+                    bitmap.pixels.data() + y * bitmap.width,
+                    bitmap.width);
             }
 
-            cursorX += cached.bitmap.width + glyphPadding;
-            rowHeight = std::max(rowHeight, cached.bitmap.height);
+            cursorX += bitmap.width + glyphPadding;
+            rowHeight = std::max(rowHeight, bitmap.height);
             hasVisibleGlyph = true;
         }
 
@@ -1618,7 +1691,7 @@ void VulkanRenderer::rebuildTextAtlas()
                 continue;
             }
 
-            const GlyphBitmap& bitmap = glyph->bitmap;
+            const GlyphBitmap& bitmap = *glyph->bitmap;
             if (bitmap.width > 0 && bitmap.height > 0) {
                 const float glyphX = snapPixel(penX + static_cast<float>(bitmap.bearingX));
                 const float glyphY = snapPixel(baseline - static_cast<float>(bitmap.bearingY));
@@ -1917,15 +1990,25 @@ void VulkanRenderer::rebuildSvgAtlas()
     svgDraws_.clear();
 
     struct CachedSvg {
-        SvgBitmap bitmap;
+        const SvgBitmap* bitmap = nullptr;
         std::uint32_t atlasX = 0;
         std::uint32_t atlasY = 0;
         SvgRenderMode renderMode = SvgRenderMode::Color;
     };
 
     using SvgCacheKey = std::tuple<std::string, int, int, long, long, long, long>;
+    struct RasterCacheEntry {
+        SvgBitmap bitmap;
+        SvgRenderMode renderMode = SvgRenderMode::Color;
+        std::uint64_t lastUsed = 0;
+    };
+    static std::map<SvgCacheKey, RasterCacheEntry> rasterCache;
+    static std::uint64_t cacheGeneration = 0;
+    const std::uint64_t generation = ++cacheGeneration;
+
     constexpr std::uint32_t atlasWidth = 2048;
     constexpr std::uint32_t padding = 2;
+    constexpr std::size_t maxRasterCacheEntries = 512;
     std::uint32_t atlasHeight = 64;
     std::vector<std::uint8_t> atlas(atlasWidth * atlasHeight * 4, 0);
     std::map<SvgCacheKey, CachedSvg> svgCache;
@@ -1953,25 +2036,26 @@ void VulkanRenderer::rebuildSvgAtlas()
     };
 
     const auto packSvg = [&](CachedSvg& cached) {
-        if (cursorX + cached.bitmap.width + padding > atlasWidth) {
+        const SvgBitmap& bitmap = *cached.bitmap;
+        if (cursorX + bitmap.width + padding > atlasWidth) {
             cursorX = padding;
             cursorY += rowHeight + padding;
             rowHeight = 0;
         }
 
-        ensureAtlasHeight(cursorY + cached.bitmap.height + padding);
+        ensureAtlasHeight(cursorY + bitmap.height + padding);
         cached.atlasX = cursorX;
         cached.atlasY = cursorY;
 
-        for (std::uint32_t y = 0; y < cached.bitmap.height; ++y) {
+        for (std::uint32_t y = 0; y < bitmap.height; ++y) {
             std::memcpy(
                 atlas.data() + ((cached.atlasY + y) * atlasWidth + cached.atlasX) * 4,
-                cached.bitmap.rgba.data() + y * cached.bitmap.width * 4,
-                cached.bitmap.width * 4);
+                bitmap.rgba.data() + y * bitmap.width * 4,
+                bitmap.width * 4);
         }
 
-        cursorX += cached.bitmap.width + padding;
-        rowHeight = std::max(rowHeight, cached.bitmap.height);
+        cursorX += bitmap.width + padding;
+        rowHeight = std::max(rowHeight, bitmap.height);
     };
 
     const auto cacheKeyFor = [](const SvgPrimitive& svg) {
@@ -1994,44 +2078,111 @@ void VulkanRenderer::rebuildSvgAtlas()
         const SvgCacheKey key = cacheKeyFor(svg);
         auto cachedSvg = svgCache.find(key);
         if (cachedSvg == svgCache.end()) {
-            CachedSvg cached{
-                .bitmap = renderSvgBitmap(svg),
-                .renderMode = svg.renderMode,
-            };
-            if (cached.bitmap.width == 0 || cached.bitmap.height == 0) {
+            auto raster = rasterCache.find(key);
+            if (raster == rasterCache.end()) {
+                RasterCacheEntry entry{
+                    .bitmap = renderSvgBitmap(svg),
+                    .renderMode = svg.renderMode,
+                    .lastUsed = generation,
+                };
+                if (entry.renderMode == SvgRenderMode::Sdf) {
+                    convertSvgAlphaToSdf(entry.bitmap, svg.sdfSpread);
+                } else if (svg.rasterScale > 1.0f && svg.width > 0.0f && svg.height > 0.0f) {
+                    const auto targetWidth = std::max(1u, static_cast<std::uint32_t>(svg.width + 0.5f));
+                    const auto targetHeight = std::max(1u, static_cast<std::uint32_t>(svg.height + 0.5f));
+                    entry.bitmap = downsampleSvgBitmap(entry.bitmap, targetWidth, targetHeight);
+                }
+                raster = rasterCache.emplace(key, std::move(entry)).first;
+            }
+            raster->second.lastUsed = generation;
+
+            if (raster->second.bitmap.width == 0 || raster->second.bitmap.height == 0) {
                 return;
             }
-
-            if (cached.renderMode == SvgRenderMode::Sdf) {
-                convertSvgAlphaToSdf(cached.bitmap, svg.sdfSpread);
-            } else if (svg.rasterScale > 1.0f && svg.width > 0.0f && svg.height > 0.0f) {
-                const auto targetWidth = std::max(1u, static_cast<std::uint32_t>(svg.width + 0.5f));
-                const auto targetHeight = std::max(1u, static_cast<std::uint32_t>(svg.height + 0.5f));
-                cached.bitmap = downsampleSvgBitmap(cached.bitmap, targetWidth, targetHeight);
-            }
-
-            if (cached.bitmap.width + padding * 2 > atlasWidth) {
+            if (raster->second.bitmap.width + padding * 2 > atlasWidth) {
                 throw std::runtime_error("SVG is wider than the SVG atlas");
             }
 
+            CachedSvg cached{
+                .bitmap = &raster->second.bitmap,
+                .renderMode = raster->second.renderMode,
+            };
             packSvg(cached);
             cachedSvg = svgCache.emplace(key, std::move(cached)).first;
         }
 
         const CachedSvg& cached = cachedSvg->second;
+        const SvgBitmap& bitmap = *cached.bitmap;
 
-        const float drawWidth = svg.width > 0.0f ? svg.width : static_cast<float>(cached.bitmap.width);
-        const float drawHeight = svg.height > 0.0f ? svg.height : static_cast<float>(cached.bitmap.height);
+        const float drawWidth = svg.width > 0.0f ? svg.width : static_cast<float>(bitmap.width);
+        const float drawHeight = svg.height > 0.0f ? svg.height : static_cast<float>(bitmap.height);
         svgDraws_[id] = {
             .rect = {svg.x, svg.y, drawWidth, drawHeight},
             .uv = {
                 static_cast<float>(cached.atlasX) / static_cast<float>(atlasWidth),
                 static_cast<float>(cached.atlasY) / static_cast<float>(atlasHeight),
-                static_cast<float>(cached.bitmap.width) / static_cast<float>(atlasWidth),
-                static_cast<float>(cached.bitmap.height) / static_cast<float>(atlasHeight),
+                static_cast<float>(bitmap.width) / static_cast<float>(atlasWidth),
+                static_cast<float>(bitmap.height) / static_cast<float>(atlasHeight),
             },
             .color = cached.renderMode == SvgRenderMode::Color ? Color{1.0f, 1.0f, 1.0f, color.a} : color,
             .mode = cached.renderMode == SvgRenderMode::Sdf ? 1.0f : (cached.renderMode == SvgRenderMode::Mask ? 2.0f : 0.0f),
+        };
+        svgs.emplace_back(id, &cached);
+    };
+
+    const auto addImageDraw = [&](PrimitiveId id, const ImagePrimitive& image, Color color) {
+        if (image.source.empty()) {
+            return;
+        }
+        const SvgCacheKey key{
+            image.source,
+            99,
+            static_cast<int>(SvgRenderMode::Color),
+            std::lround(image.width * 100.0f),
+            std::lround(image.height * 100.0f),
+            100,
+            0,
+        };
+        auto cachedImage = svgCache.find(key);
+        if (cachedImage == svgCache.end()) {
+            auto raster = rasterCache.find(key);
+            if (raster == rasterCache.end()) {
+                SvgBitmap bitmap = renderPngBitmap(image);
+                const auto targetWidth = std::max(1u, static_cast<std::uint32_t>(image.width + 0.5f));
+                const auto targetHeight = std::max(1u, static_cast<std::uint32_t>(image.height + 0.5f));
+                bitmap = downsampleSvgBitmap(bitmap, targetWidth, targetHeight);
+                raster = rasterCache.emplace(
+                    key,
+                    RasterCacheEntry{
+                        .bitmap = std::move(bitmap),
+                        .renderMode = SvgRenderMode::Color,
+                        .lastUsed = generation,
+                    }).first;
+            }
+            raster->second.lastUsed = generation;
+
+            if (raster->second.bitmap.width + padding * 2 > atlasWidth) {
+                throw std::runtime_error("image is wider than the visual atlas");
+            }
+            CachedSvg cached{
+                .bitmap = &raster->second.bitmap,
+                .renderMode = SvgRenderMode::Color,
+            };
+            packSvg(cached);
+            cachedImage = svgCache.emplace(key, std::move(cached)).first;
+        }
+        const CachedSvg& cached = cachedImage->second;
+        const SvgBitmap& bitmap = *cached.bitmap;
+        svgDraws_[id] = {
+            .rect = {image.x, image.y, image.width, image.height},
+            .uv = {
+                static_cast<float>(cached.atlasX) / static_cast<float>(atlasWidth),
+                static_cast<float>(cached.atlasY) / static_cast<float>(atlasHeight),
+                static_cast<float>(bitmap.width) / static_cast<float>(atlasWidth),
+                static_cast<float>(bitmap.height) / static_cast<float>(atlasHeight),
+            },
+            .color = {1.0f, 1.0f, 1.0f, color.a},
+            .mode = 0.0f,
         };
         svgs.emplace_back(id, &cached);
     };
@@ -2043,6 +2194,8 @@ void VulkanRenderer::rebuildSvgAtlas()
 
         if (const auto* svg = std::get_if<SvgPrimitive>(&primitive.geometry)) {
             addSvgDraw(primitive.id, *svg, primitive.style.fill);
+        } else if (const auto* image = std::get_if<ImagePrimitive>(&primitive.geometry)) {
+            addImageDraw(primitive.id, *image, primitive.style.fill);
         } else if (const auto* button = std::get_if<ButtonPrimitive>(&primitive.geometry)) {
             if (button->iconSvg.empty() || button->iconSize <= 0.0f) {
                 continue;
@@ -2074,8 +2227,18 @@ void VulkanRenderer::rebuildSvgAtlas()
         SvgDraw& draw = svgDraws_[id];
         draw.uv[0] = static_cast<float>(cached->atlasX) / static_cast<float>(svgAtlasWidth_);
         draw.uv[1] = static_cast<float>(cached->atlasY) / static_cast<float>(svgAtlasHeight_);
-        draw.uv[2] = static_cast<float>(cached->bitmap.width) / static_cast<float>(svgAtlasWidth_);
-        draw.uv[3] = static_cast<float>(cached->bitmap.height) / static_cast<float>(svgAtlasHeight_);
+        draw.uv[2] = static_cast<float>(cached->bitmap->width) / static_cast<float>(svgAtlasWidth_);
+        draw.uv[3] = static_cast<float>(cached->bitmap->height) / static_cast<float>(svgAtlasHeight_);
+    }
+
+    while (rasterCache.size() > maxRasterCacheEntries) {
+        const auto oldest = std::ranges::min_element(rasterCache, {}, [](const auto& entry) {
+            return entry.second.lastUsed;
+        });
+        if (oldest == rasterCache.end() || oldest->second.lastUsed == generation) {
+            break;
+        }
+        rasterCache.erase(oldest);
     }
 
     const VkDeviceSize uploadSize = atlas.size();

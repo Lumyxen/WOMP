@@ -1,6 +1,11 @@
 #pragma once
 
 #include "womp/platform/WaylandWindow.h"
+#include "womp/library/ImportService.h"
+#include "womp/mpris/MprisService.h"
+#include "womp/playback/AudioPlayer.h"
+#include "womp/playback/PlaybackQueue.h"
+#include "womp/playback/PlaybackStats.h"
 #include "womp/renderer/VulkanRenderer.h"
 #include "womp/scene/Primitive.h"
 
@@ -26,8 +31,6 @@ struct PendingAudioFile {
 
 class App {
 public:
-    using PlaylistId = std::uint64_t;
-
     App();
 
     void run();
@@ -39,13 +42,20 @@ private:
         PlaylistId id = 0;
         std::string name;
         std::chrono::system_clock::time_point createdAt;
-        std::vector<std::size_t> trackIndexes;
-        std::unordered_set<std::size_t> trackIndexSet;
+        std::vector<TrackId> trackIndexes;
+        std::unordered_set<TrackId> trackIndexSet;
     };
 
     struct Track {
+        TrackId id;
         std::filesystem::path path;
         std::string title;
+        std::string album;
+        std::vector<std::string> artists;
+        std::int64_t durationMs = 0;
+        std::string formatLabel;
+        std::filesystem::path artworkPath;
+        bool available = true;
     };
 
     struct PlaylistTrackRowPrimitives {
@@ -83,7 +93,7 @@ private:
 
     void selectPlaylist(PlaylistId id);
     void createPlaylist();
-    bool addTrackToPlaylist(PlaylistId playlistId, std::size_t trackIndex);
+    bool addTrackToPlaylist(PlaylistId playlistId, const TrackId& trackId);
     void toggleCreatePlaylistMenu();
     void closeCreatePlaylistMenu();
     void beginImportPlaylistFiles();
@@ -92,6 +102,7 @@ private:
     void closeAddSongsMenu();
     void beginImportFiles();
     void completePendingAudioScanIfReady();
+    void completePendingAudioImportIfReady();
     void addPendingSongs();
     void importPendingSongs(std::vector<PendingAudioFile> songs, std::vector<PlaylistId> playlistIds);
     void importFiles(const std::vector<std::filesystem::path>& paths);
@@ -112,6 +123,22 @@ private:
     std::int32_t eventPollTimeoutMilliseconds(bool needsDraw) const;
     void togglePlayback();
     void toggleShuffle();
+    void toggleTrackPlayback(const TrackId& trackId);
+    void playTrack(const TrackId& trackId, bool shuffle = false);
+    void playSelectedSource(bool shuffle);
+    void playNext(bool userInitiated);
+    void playPrevious();
+    void startCurrentTrack();
+    void pollPlayback();
+    void flushPlaybackStats();
+    void handleMprisCommands();
+    void updateMpris();
+    bool confirmPlaylistDeletion(PlaylistId id) const;
+    bool selectedSourceIsCurrent() const;
+    std::vector<TrackId> selectedSourceTrackIds() const;
+    const Track* findTrack(const TrackId& id) const;
+    Track* findTrack(const TrackId& id);
+    void reloadLibrary();
     void toggleVolumeMute();
     void setVolumeFromPointer(float x);
     void setMediaProgressFromPointer(float x);
@@ -150,13 +177,18 @@ private:
     void setSidebarPlaylistFirstVisibleRow(std::size_t firstVisibleRow);
     bool sidebarPlaylistViewportContains(float x, float y) const;
 
+    LibraryStore libraryStore_;
+    ImportService importService_;
+    AudioPlayer audioPlayer_;
+    PlaybackQueue playbackQueue_;
+    PlaybackStats playbackStats_;
+    MprisService mprisService_;
     WaylandWindow window_;
     VulkanRenderer renderer_;
     PrimitiveStore primitives_;
     std::vector<Playlist> playlists_;
     std::vector<Track> tracks_;
-    std::unordered_map<std::filesystem::path, std::size_t> trackIndexesByPath_;
-    PlaylistId nextPlaylistId_ = 1;
+    std::unordered_map<TrackId, std::size_t> trackIndexesById_;
     PlaylistId selectedPlaylistId_ = 0;
     PrimitiveId pressedButton_ = 0;
     PrimitiveId firstModalPrimitiveId_ = 0;
@@ -168,8 +200,10 @@ private:
     bool addSongsPlaylistDropdownOpen_ = false;
     bool searchCaretVisible_ = true;
     bool addSongsAudioScanActive_ = false;
+    bool audioImportActive_ = false;
     std::chrono::steady_clock::time_point nextSearchCaretBlink_ = std::chrono::steady_clock::now();
     std::future<std::vector<PendingAudioFile>> pendingAudioScan_;
+    std::future<ImportResult> pendingAudioImport_;
     std::shared_ptr<AudioScanProgress> pendingAudioScanProgress_;
     std::uint64_t renderedAudioScanProgressRevision_ = 0;
     float pendingAddSongsScrollOffset_ = 0.0f;
@@ -208,9 +242,11 @@ private:
     TextEditState playlistSearchEdit_;
     std::string playlistSearchQuery_;
     std::string normalizedPlaylistSearchQuery_;
-    std::vector<std::size_t> filteredPlaylistTrackIndexes_;
+    std::vector<TrackId> filteredPlaylistTrackIndexes_;
     std::size_t playlistFirstVisibleRow_ = 0;
     std::size_t hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
+    TrackId lastClickedPlaylistTrackId_;
+    std::uint32_t lastPlaylistTrackClickTimeMs_ = 0;
     bool draggingPlaylistScrollbar_ = false;
     float playlistScrollbarDragOffsetY_ = 0.0f;
     float playlistTrackViewportX_ = 0.0f;
@@ -256,6 +292,8 @@ private:
     bool primitivesDirty_ = false;
     VulkanRenderer::PrimitiveUpdate pendingPrimitiveUpdate_ = VulkanRenderer::PrimitiveUpdate::Full;
     bool sceneReady_ = false;
+    std::chrono::steady_clock::time_point nextStatsFlush_ = std::chrono::steady_clock::now();
+    std::string lastImportResultText_;
 };
 
 } // namespace womp

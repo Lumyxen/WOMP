@@ -422,15 +422,6 @@ std::filesystem::path homeDirectory()
     return std::filesystem::current_path();
 }
 
-std::filesystem::path dataDirectory()
-{
-    if (const char* dataHome = std::getenv("XDG_DATA_HOME"); dataHome != nullptr && dataHome[0] != '\0') {
-        return std::filesystem::path{dataHome} / "womp";
-    }
-
-    return homeDirectory() / ".local" / "share" / "womp";
-}
-
 std::filesystem::path configDirectory()
 {
     if (const char* configHome = std::getenv("XDG_CONFIG_HOME"); configHome != nullptr && configHome[0] != '\0') {
@@ -443,11 +434,6 @@ std::filesystem::path configDirectory()
 std::filesystem::path appConfigFilePath()
 {
     return configDirectory() / "config.conf";
-}
-
-std::filesystem::path appStateFilePath()
-{
-    return dataDirectory() / "state.conf";
 }
 
 char loadNumberGroupingSeparator()
@@ -530,43 +516,6 @@ std::string formatPlaylistCreationTime(std::chrono::system_clock::time_point cre
     }
     formatted << localTime.tm_min << (localTime.tm_hour < 12 ? " AM" : " PM");
     return formatted.str();
-}
-
-std::filesystem::path loadLastImportDirectory()
-{
-    std::ifstream file(appStateFilePath());
-    std::string line;
-    while (std::getline(file, line)) {
-        constexpr std::string_view key = "lastImportDirectory=";
-        if (line.starts_with(key)) {
-            std::filesystem::path path{line.substr(key.size())};
-            std::error_code error;
-            if (std::filesystem::is_directory(path, error)) {
-                return path;
-            }
-        }
-    }
-
-    return homeDirectory();
-}
-
-void saveLastImportDirectory(const std::filesystem::path& directory)
-{
-    std::error_code error;
-    if (!std::filesystem::is_directory(directory, error)) {
-        return;
-    }
-
-    const std::filesystem::path dataDir = dataDirectory();
-    std::filesystem::create_directories(dataDir, error);
-    if (error) {
-        return;
-    }
-
-    std::ofstream file(dataDir / "state.conf", std::ios::trunc);
-    if (file) {
-        file << "lastImportDirectory=" << directory.string() << '\n';
-    }
 }
 
 std::string shellQuote(const std::string& value)
@@ -743,6 +692,63 @@ std::string formatTimestamp(float seconds)
     return buffer;
 }
 
+std::string joinArtists(const std::vector<std::string>& artists)
+{
+    std::string result;
+    for (const std::string& artist : artists) {
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += artist;
+    }
+    return result.empty() ? "Unknown Artist" : result;
+}
+
+std::string formatDurationMs(std::int64_t durationMs)
+{
+    return formatTimestamp(static_cast<float>(durationMs) / 1000.0f);
+}
+
+std::string formatSummaryDuration(std::int64_t durationMs)
+{
+    const std::int64_t totalSeconds = std::max<std::int64_t>(0, durationMs) / 1000;
+    const std::int64_t hours = totalSeconds / 3600;
+    const std::int64_t minutes = (totalSeconds / 60) % 60;
+    const std::int64_t seconds = totalSeconds % 60;
+    char buffer[48]{};
+    std::snprintf(
+        buffer,
+        sizeof(buffer),
+        "%lld:%02lld:%02lld",
+        static_cast<long long>(hours),
+        static_cast<long long>(minutes),
+        static_cast<long long>(seconds));
+    return buffer;
+}
+
+std::string formatLastPlayed(std::optional<std::int64_t> timestampMs)
+{
+    if (!timestampMs) {
+        return "Never";
+    }
+    return formatPlaylistCreationTime(
+        std::chrono::system_clock::time_point{std::chrono::milliseconds{*timestampMs}});
+}
+
+std::int64_t currentTimeMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string importResultText(const ImportResult& result)
+{
+    return "Imported " + std::to_string(result.imported)
+        + " | duplicate " + std::to_string(result.duplicates)
+        + " | unsupported " + std::to_string(result.unsupported)
+        + " | failed " + std::to_string(result.failed);
+}
+
 std::vector<std::filesystem::path> parseZenityPaths(const std::string& output)
 {
     std::vector<std::filesystem::path> paths;
@@ -817,95 +823,6 @@ std::vector<std::filesystem::path> runPlaylistImportDialog(const std::filesystem
 }
 
 std::string displayNameForPath(const std::filesystem::path& path);
-
-struct ParsedPlaylistFile {
-    std::string name;
-    std::vector<std::filesystem::path> tracks;
-};
-
-bool isM3uPlaylistFile(const std::filesystem::path& path)
-{
-    std::string extension = path.extension().string();
-    std::ranges::transform(extension, extension.begin(), [](unsigned char character) {
-        return character >= 'A' && character <= 'Z'
-            ? static_cast<char>(character - 'A' + 'a')
-            : static_cast<char>(character);
-    });
-    return extension == ".m3u" || extension == ".m3u8";
-}
-
-bool isUrlEntry(std::string_view entry)
-{
-    const std::size_t colon = entry.find(':');
-    if (colon == std::string_view::npos || colon == 0) {
-        return false;
-    }
-    if ((entry[0] < 'A' || entry[0] > 'Z') && (entry[0] < 'a' || entry[0] > 'z')) {
-        return false;
-    }
-    return std::ranges::all_of(entry.substr(1, colon - 1), [](unsigned char character) {
-        return (character >= 'A' && character <= 'Z')
-            || (character >= 'a' && character <= 'z')
-            || (character >= '0' && character <= '9')
-            || character == '+'
-            || character == '-'
-            || character == '.';
-    });
-}
-
-bool parsePlaylistFile(const std::filesystem::path& playlistPath, ParsedPlaylistFile& playlist)
-{
-    if (!isM3uPlaylistFile(playlistPath)) {
-        return false;
-    }
-
-    std::ifstream file(playlistPath, std::ios::binary);
-    if (!file) {
-        return false;
-    }
-
-    playlist = {
-        .name = displayNameForPath(playlistPath),
-    };
-    std::unordered_set<std::filesystem::path> seenTracks;
-    std::string line;
-    bool firstLine = true;
-    while (std::getline(file, line)) {
-        if (firstLine && line.starts_with("\xEF\xBB\xBF")) {
-            line.erase(0, 3);
-        }
-        firstLine = false;
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-
-        const std::size_t first = line.find_first_not_of(" \t");
-        if (first == std::string::npos) {
-            continue;
-        }
-        const std::size_t last = line.find_last_not_of(" \t");
-        const std::string_view entry{line.data() + first, last - first + 1};
-        if (entry.starts_with('#') || isUrlEntry(entry)) {
-            continue;
-        }
-
-        std::filesystem::path trackPath{entry};
-        if (trackPath.is_relative()) {
-            trackPath = playlistPath.parent_path() / trackPath;
-        }
-
-        std::error_code error;
-        const std::filesystem::path normalizedPath = std::filesystem::absolute(trackPath, error).lexically_normal();
-        if (error || !std::filesystem::is_regular_file(normalizedPath, error) || error || !isAudioFile(normalizedPath)) {
-            continue;
-        }
-        if (seenTracks.insert(normalizedPath).second) {
-            playlist.tracks.push_back(normalizedPath);
-        }
-    }
-
-    return true;
-}
 
 std::vector<std::filesystem::path> audioFilesInDirectory(const std::filesystem::path& directory)
 {
@@ -1253,6 +1170,18 @@ const std::string& volumeIconFor(float effectiveVolume, bool muted)
     return volumeTwoIcon();
 }
 
+const std::string& playIconSvg()
+{
+    static const std::string icon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play-icon lucide-play"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>)";
+    return icon;
+}
+
+const std::string& pauseIconSvg()
+{
+    static const std::string icon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause-icon lucide-pause"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>)";
+    return icon;
+}
+
 } // namespace
 
 void App::buildInitialScene(float windowWidth, float windowHeight)
@@ -1312,8 +1241,8 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string defaultCoverIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image-icon lucide-image"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>)";
     const std::string ellipsisIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-ellipsis-icon lucide-ellipsis"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>)";
     const std::string backwardIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-skip-back-icon lucide-skip-back"><path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"/><path d="M3 20V4"/></svg>)";
-    const std::string pauseIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause-icon lucide-pause"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>)";
-    const std::string playIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play-icon lucide-play"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>)";
+    const std::string& pauseIcon = pauseIconSvg();
+    const std::string& playIcon = playIconSvg();
     const std::string forwardIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-skip-forward-icon lucide-skip-forward"><path d="M21 4v16"/><path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z"/></svg>)";
     const bool effectivelyMuted = volumeMuted_ || volume_ <= 0.0f;
     const float effectiveVolume = effectivelyMuted ? 0.0f : volume_;
@@ -1468,7 +1397,9 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             }));
     };
 
-    const auto addHeaderActionButton = [&](const std::string& iconSvg, float x, float y, float size, bool primary = false, std::function<void()> onClick = {}) {
+    const auto addHeaderActionButton = [&](const std::string& iconSvg, float x, float y, float size, bool primary = false, bool danger = false, std::function<void()> onClick = {}) {
+        const Color dangerColor = rgb(224, 91, 91);
+        const Color dangerHover = rgb(91, 48, 51);
         primitives_.add(Primitive::button(
             {
                 .x = x,
@@ -1480,16 +1411,16 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 .iconSize = 20.0f,
                 .label = "",
                 .iconSvg = iconSvg,
-                .iconColor = primary ? sidebarBackground : sidebarText,
-                .hoverFill = primary ? sidebarText : mantle,
-                .pressedFill = primary ? iconGrey : activeFill,
-                .hoverStroke = primary ? sidebarText : border,
-                .pressedStroke = accent,
+                .iconColor = primary ? sidebarBackground : (danger ? dangerColor : sidebarText),
+                .hoverFill = primary ? sidebarText : (danger ? dangerHover : mantle),
+                .pressedFill = primary ? iconGrey : (danger ? dangerHover : activeFill),
+                .hoverStroke = primary ? sidebarText : (danger ? dangerColor : border),
+                .pressedStroke = danger ? dangerColor : accent,
                 .onClick = std::move(onClick),
             },
             {
                 .fill = primary ? accent : transparent,
-                .stroke = primary ? accent : border,
+                .stroke = primary ? accent : (danger ? dangerColor : border),
                 .strokeWidth = 1.0f,
             }));
     };
@@ -1571,11 +1502,11 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     mediaProgressSliderHeight_ = transportBarThickness;
     mediaProgressSliderHitHeight_ = volumeButtonSize;
     addShuffleButton(transportX - shuffleButtonSize - transportButtonGap, transportY + (transportButtonSize - shuffleButtonSize) * 0.5f);
-    addTransportButton(backwardIcon, transportX, transportY);
+    addTransportButton(backwardIcon, transportX, transportY, [this] { playPrevious(); });
     playPauseButtonId_ = addTransportButton(playing_ ? pauseIcon : playIcon, transportX + transportButtonSize + transportButtonGap, transportY, [this]() {
         togglePlayback();
     });
-    addTransportButton(forwardIcon, transportX + (transportButtonSize + transportButtonGap) * 2.0f, transportY);
+    addTransportButton(forwardIcon, transportX + (transportButtonSize + transportButtonGap) * 2.0f, transportY, [this] { playNext(true); });
     addVolumeButton(volumeX, volumeY);
     primitives_.add(Primitive::roundedRect(
         {
@@ -1704,16 +1635,18 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string playlistDescription = allSongsSelected
         ? "Every song in your library."
         : "No description for this playlist.";
+    const PlaylistSummary selectedSummary = libraryStore_.summary(
+        allSongsSelected ? std::nullopt : std::optional<PlaylistId>{selectedPlaylistId_});
     std::vector<std::pair<std::string_view, std::string>> playlistStats{
         {"SONGS", groupedSongCount},
-        {"TOTAL TIME", "0 min"},
-        {"LISTENED", "0 min"},
-        {"LAST PLAYED", "Never"},
+        {"TOTAL TIME", formatSummaryDuration(selectedSummary.totalDurationMs)},
+        {"LISTENED", formatSummaryDuration(selectedSummary.listenedMs)},
+        {"LAST PLAYED", formatLastPlayed(selectedSummary.lastPlayedAtMs)},
     };
     if (!allSongsSelected) {
         playlistStats.emplace_back("TIME CREATED", formatPlaylistCreationTime(selectedPlaylist->createdAt));
     }
-    const std::size_t headerActionCount = allSongsSelected ? 2 : 6;
+    const std::size_t headerActionCount = allSongsSelected ? 1 : 5;
     const float responsiveIconTileSize = std::min(
         headerIconTileSize,
         std::max(72.0f, contentWidth * 0.2f));
@@ -1822,20 +1755,27 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .strokeWidth = 0.0f,
         }));
     float headerActionX = headerActionsX;
-    const auto addHeaderAction = [&](const std::string& icon, bool primary = false, std::function<void()> onClick = {}) {
-        addHeaderActionButton(icon, headerActionX, headerActionsY, headerActionSize, primary, std::move(onClick));
+    const auto addHeaderAction = [&](const std::string& icon, bool primary = false, bool danger = false, std::function<void()> onClick = {}) {
+        addHeaderActionButton(icon, headerActionX, headerActionsY, headerActionSize, primary, danger, std::move(onClick));
         headerActionX += headerActionSize + headerActionGap;
     };
     if (!allSongsSelected) {
+        addHeaderAction(deleteIcon, false, true, [this, playlistId = selectedPlaylistId_]() {
+            if (confirmPlaylistDeletion(playlistId)) {
+                removePlaylist(playlistId);
+            }
+        });
         addHeaderAction(pinIcon);
         addHeaderAction(renameIcon);
         addHeaderAction(exportIcon);
-        addHeaderAction(deleteIcon, false, [this, playlistId = selectedPlaylistId_]() {
-            removePlaylist(playlistId);
-        });
     }
-    addHeaderAction(shuffleIcon);
-    addHeaderAction(playIcon, true);
+    addHeaderAction(selectedSourceIsCurrent() && playing_ ? pauseIcon : playIcon, true, false, [this] {
+        if (selectedSourceIsCurrent()) {
+            togglePlayback();
+        } else {
+            playSelectedSource(false);
+        }
+    });
 
     for (std::size_t statIndex = 0; statIndex < playlistStats.size(); ++statIndex) {
         const std::size_t column = statIndex % headerStatColumnCount;
@@ -2443,6 +2383,20 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 .stroke = sidebarText,
                 .strokeWidth = 0.0f,
             }));
+        if (!lastImportResultText_.empty()) {
+            primitives_.add(Primitive::text(
+                {
+                    .x = menu.x + 170.0f,
+                    .y = menu.y + 29.0f,
+                    .fontSize = 11.0f,
+                    .text = truncateText(lastImportResultText_, 44),
+                },
+                {
+                    .fill = menuSubtleText,
+                    .stroke = menuSubtleText,
+                    .strokeWidth = 0.0f,
+                }));
+        }
         primitives_.add(Primitive::button(
             {
                 .x = menu.x + menu.width - menuPadding - closeButtonSize,
@@ -2993,14 +2947,35 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
 }
 
 App::App()
-    : window_(1280, 720, "womp")
+    : libraryStore_(LibraryStore::defaultDataDirectory())
+    , importService_(libraryStore_)
+    , audioPlayer_()
+    , playbackQueue_()
+    , playbackStats_()
+    , mprisService_()
+    , window_(1280, 720, "womp")
     , renderer_(window_)
 {
-    lastImportDirectory_ = loadLastImportDirectory();
+    reloadLibrary();
+    lastImportDirectory_ = libraryStore_.setting("last_import_directory")
+        .transform([](const std::string& value) { return std::filesystem::path{value}; })
+        .value_or(homeDirectory());
     numberGroupingSeparator_ = loadNumberGroupingSeparator();
-    addPlaylist("Recently Added");
-    addPlaylist("Favorites");
-    addPlaylist("Long Drives");
+    if (const auto selected = libraryStore_.setting("selected_playlist")) {
+        selectedPlaylistId_ = std::strtoll(selected->c_str(), nullptr, 10);
+        if (selectedPlaylistId_ != 0
+            && std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id) == playlists_.end()) {
+            selectedPlaylistId_ = 0;
+        }
+    }
+    if (const auto volume = libraryStore_.setting("volume")) {
+        volume_ = std::clamp(std::strtof(volume->c_str(), nullptr), 0.0f, 1.0f);
+    }
+    volumeMuted_ = libraryStore_.setting("mute").value_or("0") == "1";
+    shuffleEnabled_ = libraryStore_.setting("shuffle").value_or("0") == "1";
+    audioPlayer_.setVolume(volume_);
+    audioPlayer_.setMuted(volumeMuted_);
+    nextStatsFlush_ = std::chrono::steady_clock::now() + std::chrono::seconds{10};
     rebuildScene();
     window_.setPointerEventHandler([this](const WaylandWindow::PointerEvent& event) {
         handlePointerEvent(event);
@@ -3013,9 +2988,12 @@ App::App()
 void App::run()
 {
     bool needsDraw = true;
-    while (window_.pollEvents(eventPollTimeoutMilliseconds(needsDraw))) {
+    while (window_.pollEvents(eventPollTimeoutMilliseconds(needsDraw), mprisService_.wakeFd())) {
         completePendingAudioScanIfReady();
+        completePendingAudioImportIfReady();
         updateSearchCaretBlink();
+        handleMprisCommands();
+        pollPlayback();
 
         if (window_.takeResizeFlag()) {
             renderer_.recreateSwapchain();
@@ -3037,12 +3015,18 @@ void App::run()
         }
     }
 
+    playbackStats_.finish(false, false, std::chrono::steady_clock::now());
+    flushPlaybackStats();
+    libraryStore_.setSetting("selected_playlist", std::to_string(selectedPlaylistId_));
+    libraryStore_.setSetting("volume", std::to_string(volume_));
+    libraryStore_.setSetting("mute", volumeMuted_ ? "1" : "0");
+    libraryStore_.setSetting("shuffle", shuffleEnabled_ ? "1" : "0");
     renderer_.waitIdle();
 }
 
-App::PlaylistId App::addPlaylist(std::string name)
+PlaylistId App::addPlaylist(std::string name)
 {
-    const PlaylistId id = nextPlaylistId_++;
+    const PlaylistId id = libraryStore_.createPlaylist(name);
     playlists_.push_back({
         .id = id,
         .name = std::move(name),
@@ -3060,6 +3044,9 @@ bool App::removePlaylist(PlaylistId id)
         return false;
     }
 
+    if (!libraryStore_.removePlaylist(id)) {
+        return false;
+    }
     const auto removed = std::erase_if(playlists_, [id](const Playlist& playlist) {
         return playlist.id == id;
     });
@@ -3080,10 +3067,42 @@ bool App::removePlaylist(PlaylistId id)
     return true;
 }
 
+void App::reloadLibrary()
+{
+    tracks_.clear();
+    trackIndexesById_.clear();
+    for (TrackRecord& record : libraryStore_.loadTracks()) {
+        trackIndexesById_[record.id] = tracks_.size();
+        tracks_.push_back({
+            .id = std::move(record.id),
+            .path = libraryStore_.absoluteTrackPath(record),
+            .title = std::move(record.title),
+            .album = std::move(record.album),
+            .artists = std::move(record.artists),
+            .durationMs = record.durationMs,
+            .formatLabel = std::move(record.formatLabel),
+            .artworkPath = libraryStore_.absoluteArtworkPath(record),
+            .available = record.available,
+        });
+    }
+    playlists_.clear();
+    for (PlaylistRecord& record : libraryStore_.loadPlaylists()) {
+        Playlist playlist{
+            .id = record.id,
+            .name = std::move(record.name),
+            .createdAt = std::chrono::system_clock::time_point{std::chrono::milliseconds{record.createdAtMs}},
+            .trackIndexes = std::move(record.trackIds),
+        };
+        playlist.trackIndexSet.insert(playlist.trackIndexes.begin(), playlist.trackIndexes.end());
+        playlists_.push_back(std::move(playlist));
+    }
+}
+
 std::vector<Primitive> App::renderPrimitives(VulkanRenderer::PrimitiveUpdate update) const
 {
     const bool needsText = includesUpdate(update, VulkanRenderer::PrimitiveUpdate::Text);
-    const bool needsSvg = includesUpdate(update, VulkanRenderer::PrimitiveUpdate::Svg);
+    const bool needsSvg = includesUpdate(update, VulkanRenderer::PrimitiveUpdate::Svg)
+        || includesUpdate(update, VulkanRenderer::PrimitiveUpdate::Image);
     std::vector<Primitive> result;
     result.reserve(primitives_.size());
 
@@ -3128,6 +3147,14 @@ std::vector<Primitive> App::renderPrimitives(VulkanRenderer::PrimitiveUpdate upd
                 .source = needsSvg ? svg->source : cachedSourceMarker(svg->source),
                 .sourceType = svg->sourceType,
                 .renderMode = svg->renderMode,
+            };
+        } else if (const auto* image = std::get_if<ImagePrimitive>(&primitive.geometry)) {
+            snapshot.geometry = ImagePrimitive{
+                .x = image->x,
+                .y = image->y,
+                .width = image->width,
+                .height = image->height,
+                .source = needsSvg ? image->source : cachedSourceMarker(image->source),
             };
         } else if (const auto* textField = std::get_if<TextFieldPrimitive>(&primitive.geometry)) {
             snapshot.geometry = TextFieldPrimitive{
@@ -3198,6 +3225,7 @@ void App::selectPlaylist(PlaylistId id)
     }
 
     selectedPlaylistId_ = id;
+    libraryStore_.setSetting("selected_playlist", std::to_string(id));
     playlistSearchQuery_.clear();
     normalizedPlaylistSearchQuery_.clear();
     filteredPlaylistTrackIndexes_.clear();
@@ -3220,7 +3248,7 @@ void App::createPlaylist()
         name = std::string(baseName) + " " + std::to_string(suffix++);
     }
 
-    selectedPlaylistId_ = nextPlaylistId_++;
+    selectedPlaylistId_ = libraryStore_.createPlaylist(name);
     playlists_.push_back({
         .id = selectedPlaylistId_,
         .name = std::move(name),
@@ -3256,16 +3284,20 @@ void App::rebuildPlaylistTrackFilter()
         return;
     }
 
-    const auto addIfMatching = [this](std::size_t trackIndex) {
-        if (trackIndex < tracks_.size()
-            && lowercaseAscii(tracks_[trackIndex].title).find(normalizedPlaylistSearchQuery_) != std::string::npos) {
-            filteredPlaylistTrackIndexes_.push_back(trackIndex);
+    const auto addIfMatching = [this](const TrackId& trackId) {
+        const Track* track = findTrack(trackId);
+        if (track != nullptr) {
+            const std::string searchable = lowercaseAscii(
+                track->title + "\n" + track->album + "\n" + joinArtists(track->artists));
+            if (searchable.find(normalizedPlaylistSearchQuery_) != std::string::npos) {
+                filteredPlaylistTrackIndexes_.push_back(trackId);
+            }
         }
     };
 
     if (selectedPlaylistId_ == 0) {
-        for (std::size_t trackIndex = 0; trackIndex < tracks_.size(); ++trackIndex) {
-            addIfMatching(trackIndex);
+        for (const Track& track : tracks_) {
+            addIfMatching(track.id);
         }
         return;
     }
@@ -3274,8 +3306,8 @@ void App::rebuildPlaylistTrackFilter()
     if (playlist == playlists_.end()) {
         return;
     }
-    for (const std::size_t trackIndex : playlist->trackIndexes) {
-        addIfMatching(trackIndex);
+    for (const TrackId& trackId : playlist->trackIndexes) {
+        addIfMatching(trackId);
     }
 }
 
@@ -3285,8 +3317,7 @@ const App::Track* App::displayedPlaylistTrack(std::size_t displayedIndex) const
         if (displayedIndex >= filteredPlaylistTrackIndexes_.size()) {
             return nullptr;
         }
-        const std::size_t trackIndex = filteredPlaylistTrackIndexes_[displayedIndex];
-        return trackIndex < tracks_.size() ? &tracks_[trackIndex] : nullptr;
+        return findTrack(filteredPlaylistTrackIndexes_[displayedIndex]);
     }
 
     if (selectedPlaylistId_ == 0) {
@@ -3298,8 +3329,7 @@ const App::Track* App::displayedPlaylistTrack(std::size_t displayedIndex) const
         return nullptr;
     }
 
-    const std::size_t trackIndex = playlist->trackIndexes[displayedIndex];
-    return trackIndex < tracks_.size() ? &tracks_[trackIndex] : nullptr;
+    return findTrack(playlist->trackIndexes[displayedIndex]);
 }
 
 std::size_t App::displayedPlaylistTrackCount() const
@@ -3318,10 +3348,7 @@ std::size_t App::displayedPlaylistTrackCount() const
 
 std::string App::playlistTrackFileTypeBadge(const Track& track) const
 {
-    std::string extension = track.path.extension().string();
-    if (!extension.empty() && extension.front() == '.') {
-        extension.erase(extension.begin());
-    }
+    std::string extension = track.formatLabel;
     if (extension.empty()) {
         return "AUDIO";
     }
@@ -3435,9 +3462,26 @@ void App::refreshPlaylistTrackRows()
                 playlistTrackTitleCharacterWidth);
             const bool badgeVisible = titleWidth > 0.0f;
 
-            setStyleColor(row.background, transparent);
+            const bool current = playbackQueue_.current() && *playbackQueue_.current() == track->id;
+            setStyleColor(row.background, current ? rgb(63, 74, 69, 0.62f) : transparent);
             setStyleColor(row.coverTile, coverFill, border, 1.0f);
-            setStyleColor(row.coverIcon, iconGrey);
+            if (Primitive* cover = primitives_.find(row.coverIcon)) {
+                const Primitive* tile = primitives_.find(row.coverTile);
+                const auto* tileGeometry = tile == nullptr ? nullptr : std::get_if<RoundedRectPrimitive>(&tile->geometry);
+                if (!track->artworkPath.empty() && tileGeometry != nullptr) {
+                    cover->geometry = ImagePrimitive{
+                        .x = tileGeometry->x,
+                        .y = tileGeometry->y,
+                        .width = tileGeometry->width,
+                        .height = tileGeometry->height,
+                        .source = track->artworkPath.string(),
+                    };
+                    cover->style = {.fill = {1.0f, 1.0f, 1.0f, 1.0f}};
+                } else {
+                    cover->geometry = ImagePrimitive{};
+                    cover->style = {.fill = transparent};
+                }
+            }
             setText(row.title, title, sidebarText);
             setStyleColor(
                 row.fileTypeBadgeBackground,
@@ -3445,10 +3489,10 @@ void App::refreshPlaylistTrackRows()
                 badgeVisible ? border : transparent,
                 badgeVisible ? 1.0f : 0.0f);
             setText(row.fileTypeBadge, badgeVisible ? badge : std::string{}, accent);
-            setText(row.album, fitTextToWidth("Unknown Album", albumWidth, 7.0f), iconGrey);
-            setText(row.artist, fitTextToWidth("Unknown Artist", artistWidth, 7.4f), iconGrey);
-            setText(row.duration, "3:00", sidebarText);
-            setText(row.hoveredDuration, "3:00", transparent);
+            setText(row.album, fitTextToWidth(track->album, albumWidth, 7.0f), iconGrey);
+            setText(row.artist, fitTextToWidth(joinArtists(track->artists), artistWidth, 7.4f), iconGrey);
+            setText(row.duration, formatDurationMs(track->durationMs), sidebarText);
+            setText(row.hoveredDuration, formatDurationMs(track->durationMs), transparent);
             if (titleGeometry != nullptr && badgeGeometry != nullptr) {
                 const float titleVisualWidth = renderer_.measureTextVisualWidth(
                     title,
@@ -3474,6 +3518,12 @@ void App::refreshPlaylistTrackRows()
                     button->hovered = false;
                     button->pressed = false;
                     button->iconColor = transparent;
+                    if (buttonId == row.playButton && track != nullptr) {
+                        const TrackId id = track->id;
+                        const bool current = playbackQueue_.current() && *playbackQueue_.current() == id;
+                        button->iconSvg = current && playing_ ? pauseIconSvg() : playIconSvg();
+                        button->onClick = [this, id] { toggleTrackPlayback(id); };
+                    }
                 }
                 primitive->style.fill = transparent;
                 primitive->style.stroke = transparent;
@@ -3509,7 +3559,7 @@ void App::refreshPlaylistTrackRows()
         primitive->style.fill = scrollbarVisible ? iconGrey : transparent;
     }
 
-    refreshPrimitives(VulkanRenderer::PrimitiveUpdate::Text);
+    refreshPrimitives(VulkanRenderer::PrimitiveUpdate::Full);
 }
 
 void App::refreshPlaylistTrackRowHover(std::size_t hoveredSlot)
@@ -3523,8 +3573,10 @@ void App::refreshPlaylistTrackRowHover(std::size_t hoveredSlot)
     for (std::size_t slotIndex = 0; slotIndex < playlistTrackRows_.size(); ++slotIndex) {
         PlaylistTrackRowPrimitives& row = playlistTrackRows_[slotIndex];
         const bool hovered = row.active && slotIndex == hoveredSlot;
+        const Track* track = displayedPlaylistTrack(playlistFirstVisibleRow_ + slotIndex);
+        const bool current = track != nullptr && playbackQueue_.current() && *playbackQueue_.current() == track->id;
         if (Primitive* primitive = primitives_.find(row.background)) {
-            primitive->style.fill = hovered ? rowHoverFill : transparent;
+            primitive->style.fill = hovered ? rowHoverFill : (current ? rgb(63, 74, 69, 0.62f) : transparent);
         }
         if (Primitive* primitive = primitives_.find(row.duration)) {
             primitive->style.fill = hovered ? transparent : sidebarText;
@@ -3537,8 +3589,13 @@ void App::refreshPlaylistTrackRowHover(std::size_t hoveredSlot)
         for (const PrimitiveId buttonId : {row.playButton, row.ellipsisButton}) {
             if (Primitive* primitive = primitives_.find(buttonId)) {
                 if (auto* button = std::get_if<ButtonPrimitive>(&primitive->geometry)) {
-                    button->enabled = hovered;
-                    button->iconColor = hovered ? buttonIcon : transparent;
+                    const bool enabled = hovered
+                        && (buttonId != row.playButton || (track != nullptr && track->available));
+                    button->enabled = enabled;
+                    button->iconColor = enabled ? buttonIcon : transparent;
+                    if (buttonId == row.playButton && track != nullptr) {
+                        button->iconSvg = current && playing_ ? pauseIconSvg() : playIconSvg();
+                    }
                     if (!hovered) {
                         button->hovered = false;
                         button->pressed = false;
@@ -3593,19 +3650,36 @@ bool App::sidebarPlaylistViewportContains(float x, float y) const
         && y <= sidebarPlaylistViewportY_ + sidebarPlaylistViewportHeight_;
 }
 
-bool App::addTrackToPlaylist(PlaylistId playlistId, std::size_t trackIndex)
+bool App::addTrackToPlaylist(PlaylistId playlistId, const TrackId& trackId)
 {
-    if (playlistId == 0 || trackIndex >= tracks_.size()) {
+    if (playlistId == 0 || !trackIndexesById_.contains(trackId)) {
         return false;
     }
 
     const auto playlist = std::ranges::find(playlists_, playlistId, &Playlist::id);
-    if (playlist == playlists_.end() || !playlist->trackIndexSet.insert(trackIndex).second) {
+    if (playlist == playlists_.end() || !playlist->trackIndexSet.insert(trackId).second) {
         return false;
     }
 
-    playlist->trackIndexes.push_back(trackIndex);
+    if (!libraryStore_.addTrackToPlaylist(playlistId, trackId)) {
+        playlist->trackIndexSet.erase(trackId);
+        return false;
+    }
+    playlist->trackIndexes.push_back(trackId);
     return true;
+}
+
+const App::Track* App::findTrack(const TrackId& id) const
+{
+    const auto found = trackIndexesById_.find(id);
+    return found == trackIndexesById_.end() || found->second >= tracks_.size()
+        ? nullptr
+        : &tracks_[found->second];
+}
+
+App::Track* App::findTrack(const TrackId& id)
+{
+    return const_cast<Track*>(std::as_const(*this).findTrack(id));
 }
 
 void App::resetPendingSongs()
@@ -3742,11 +3816,14 @@ void App::updateSearchCaretBlink()
 
 std::int32_t App::eventPollTimeoutMilliseconds(bool needsDraw) const
 {
-    if (addSongsAudioScanActive_) {
+    if (addSongsAudioScanActive_ || audioImportActive_) {
         return 16;
     }
     if (needsDraw) {
         return 0;
+    }
+    if (playing_) {
+        return 100;
     }
     const bool searchFieldFocused = (addSongsMenuOpen_ && addSongsSearchFocused_)
         || (!anyModalOpen() && playlistSearchFocused_);
@@ -3855,6 +3932,9 @@ void App::closeCreatePlaylistMenu()
 
 void App::beginImportPlaylistFiles()
 {
+    if (audioImportActive_) {
+        return;
+    }
     std::vector<std::filesystem::path> paths = runPlaylistImportDialog(lastImportDirectory_);
     if (paths.empty()) {
         return;
@@ -3866,69 +3946,18 @@ void App::beginImportPlaylistFiles()
 
 void App::importPlaylistFiles(const std::vector<std::filesystem::path>& paths)
 {
-    std::vector<ParsedPlaylistFile> parsedPlaylists;
-    parsedPlaylists.reserve(paths.size());
+    ImportResult combined;
     for (const std::filesystem::path& path : paths) {
-        std::error_code error;
-        const std::filesystem::path normalizedPath = std::filesystem::absolute(path, error).lexically_normal();
-        if (error) {
-            continue;
-        }
-        ParsedPlaylistFile playlist;
-        if (parsePlaylistFile(normalizedPath, playlist)) {
-            parsedPlaylists.push_back(std::move(playlist));
-        }
+        const PlaylistId playlistId = libraryStore_.createPlaylist(displayNameForPath(path));
+        const ImportResult result = importService_.importM3u(path, playlistId);
+        combined.imported += result.imported;
+        combined.duplicates += result.duplicates;
+        combined.unsupported += result.unsupported;
+        combined.failed += result.failed;
+        selectedPlaylistId_ = playlistId;
     }
-
-    bool importedTrackEntry = false;
-    for (ParsedPlaylistFile& parsed : parsedPlaylists) {
-        const PlaylistId playlistId = nextPlaylistId_++;
-        playlists_.push_back({
-            .id = playlistId,
-            .name = std::move(parsed.name),
-            .createdAt = std::chrono::system_clock::now(),
-        });
-        Playlist& playlist = playlists_.back();
-        playlist.trackIndexes.reserve(parsed.tracks.size());
-        playlist.trackIndexSet.reserve(parsed.tracks.size());
-
-        for (const std::filesystem::path& path : parsed.tracks) {
-            const auto existingTrack = trackIndexesByPath_.find(path);
-            std::size_t trackIndex = 0;
-            if (existingTrack != trackIndexesByPath_.end()) {
-                trackIndex = existingTrack->second;
-            } else {
-                trackIndex = tracks_.size();
-                trackIndexesByPath_.emplace(path, trackIndex);
-                tracks_.push_back({
-                    .path = path,
-                    .title = displayNameForPath(path),
-                });
-            }
-            if (playlist.trackIndexSet.insert(trackIndex).second) {
-                playlist.trackIndexes.push_back(trackIndex);
-                importedTrackEntry = true;
-            }
-        }
-    }
-
-    if (!parsedPlaylists.empty()) {
-        selectedPlaylistId_ = playlists_.back().id;
-        sidebarPlaylistFirstVisibleRow_ = playlists_.size() - 1;
-        playlistSearchQuery_.clear();
-        normalizedPlaylistSearchQuery_.clear();
-        filteredPlaylistTrackIndexes_.clear();
-        playlistFirstVisibleRow_ = 0;
-        hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
-        if (importedTrackEntry) {
-            hasCurrentSong_ = true;
-            currentSongElapsedSeconds_ = 0.0f;
-            if (currentSongDurationSeconds_ <= 0.0f) {
-                currentSongDurationSeconds_ = 180.0f;
-            }
-        }
-    }
-
+    lastImportResultText_ = importResultText(combined);
+    reloadLibrary();
     createPlaylistMenuOpen_ = false;
     rebuildScene();
 }
@@ -3946,6 +3975,9 @@ void App::closeAddSongsMenu()
 
 void App::beginImportFiles()
 {
+    if (audioImportActive_) {
+        return;
+    }
     std::vector<std::filesystem::path> paths = runFileImportDialog(lastImportDirectory_);
     updateLastImportDirectory(paths);
     startPendingAudioScan(std::move(paths));
@@ -3972,9 +4004,34 @@ void App::completePendingAudioScanIfReady()
     }
 }
 
+void App::completePendingAudioImportIfReady()
+{
+    if (!audioImportActive_ || !pendingAudioImport_.valid()
+        || pendingAudioImport_.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+        return;
+    }
+
+    audioImportActive_ = false;
+    addSongsMenuOpen_ = true;
+    resetAddSongsMenuState(true);
+    try {
+        const ImportResult result = pendingAudioImport_.get();
+        lastImportResultText_ = importResultText(result);
+        reloadLibrary();
+        if (!normalizedPlaylistSearchQuery_.empty()) {
+            rebuildPlaylistTrackFilter();
+        }
+    } catch (const std::exception& error) {
+        lastImportResultText_ = "Import failed: " + std::string(error.what());
+    } catch (...) {
+        lastImportResultText_ = "Import failed";
+    }
+    rebuildScene();
+}
+
 void App::addPendingSongs()
 {
-    if (pendingAddSongs_.empty()) {
+    if (pendingAddSongs_.empty() || audioImportActive_) {
         return;
     }
 
@@ -3990,48 +4047,19 @@ void App::importPendingSongs(std::vector<PendingAudioFile> songs, std::vector<Pl
         return;
     }
 
-    const std::size_t newTrackCount = std::ranges::count_if(songs, [this](const PendingAudioFile& song) {
-        return !trackIndexesByPath_.contains(song.path);
-    });
-    tracks_.reserve(tracks_.size() + newTrackCount);
-    trackIndexesByPath_.reserve(trackIndexesByPath_.size() + newTrackCount);
-
-    bool imported = false;
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(songs.size());
     for (PendingAudioFile& song : songs) {
-        const auto existingTrackIndex = trackIndexesByPath_.find(song.path);
-        std::size_t trackIndex = 0;
-        if (existingTrackIndex == trackIndexesByPath_.end()) {
-            trackIndex = tracks_.size();
-            trackIndexesByPath_.emplace(song.path, trackIndex);
-            tracks_.push_back({
-                .path = std::move(song.path),
-                .title = std::move(song.displayName),
-            });
-            imported = true;
-        } else {
-            trackIndex = existingTrackIndex->second;
-        }
-
-        for (const PlaylistId playlistId : playlistIds) {
-            imported = addTrackToPlaylist(playlistId, trackIndex) || imported;
-        }
+        paths.push_back(std::move(song.path));
     }
-
-    addSongsMenuOpen_ = false;
-    resetAddSongsMenuState(true);
-    if (!imported) {
-        rebuildScene();
-        return;
-    }
-
-    hasCurrentSong_ = true;
-    currentSongElapsedSeconds_ = 0.0f;
-    if (currentSongDurationSeconds_ <= 0.0f) {
-        currentSongDurationSeconds_ = 180.0f;
-    }
-    if (!normalizedPlaylistSearchQuery_.empty()) {
-        rebuildPlaylistTrackFilter();
-    }
+    audioImportActive_ = true;
+    addSongsMenuOpen_ = true;
+    lastImportResultText_ = "Importing " + std::to_string(paths.size()) + " songs...";
+    pendingAudioImport_ = std::async(
+        std::launch::async,
+        [this, paths = std::move(paths), playlistIds = std::move(playlistIds)]() mutable {
+            return importService_.importFiles(std::move(paths), playlistIds);
+        });
     rebuildScene();
 }
 
@@ -4041,31 +4069,13 @@ void App::importFiles(const std::vector<std::filesystem::path>& paths)
         return;
     }
 
-    bool imported = false;
-    const auto addTrack = [&](const std::filesystem::path& path, PlaylistId playlistId) {
-        const std::filesystem::path normalizedPath = std::filesystem::absolute(path).lexically_normal();
-        if (!std::filesystem::is_regular_file(normalizedPath) || !isAudioFile(normalizedPath)) {
-            return false;
-        }
-
-        const auto existingTrackIndex = trackIndexesByPath_.find(normalizedPath);
-        std::size_t trackIndex = 0;
-        bool addedTrack = false;
-        if (existingTrackIndex != trackIndexesByPath_.end()) {
-            trackIndex = existingTrackIndex->second;
-        } else {
-            trackIndex = tracks_.size();
-            trackIndexesByPath_.emplace(normalizedPath, trackIndex);
-            tracks_.push_back({
-                .path = normalizedPath,
-                .title = displayNameForPath(normalizedPath),
-            });
-            addedTrack = true;
-        }
-
-        return addTrackToPlaylist(playlistId, trackIndex) || addedTrack;
+    ImportResult combined;
+    const auto mergeResult = [&combined](const ImportResult& result) {
+        combined.imported += result.imported;
+        combined.duplicates += result.duplicates;
+        combined.unsupported += result.unsupported;
+        combined.failed += result.failed;
     };
-
     for (const std::filesystem::path& path : paths) {
         const std::filesystem::path normalizedPath = std::filesystem::absolute(path).lexically_normal();
         if (std::filesystem::is_directory(normalizedPath)) {
@@ -4076,32 +4086,18 @@ void App::importFiles(const std::vector<std::filesystem::path>& paths)
 
             if (directoryImportMode_ == DirectoryImportMode::Playlist) {
                 const PlaylistId playlistId = addPlaylist(displayNameForPath(normalizedPath));
-                for (const std::filesystem::path& audioFile : audioFiles) {
-                    imported = addTrack(audioFile, playlistId) || imported;
-                }
+                mergeResult(importService_.importFiles(audioFiles, {playlistId}));
             } else {
-                for (const std::filesystem::path& audioFile : audioFiles) {
-                    imported = addTrack(audioFile, selectedPlaylistId_) || imported;
-                }
+                mergeResult(importService_.importFiles(audioFiles, selectedPlaylistId_ == 0 ? std::vector<PlaylistId>{} : std::vector<PlaylistId>{selectedPlaylistId_}));
             }
             continue;
         }
-
-        imported = addTrack(normalizedPath, selectedPlaylistId_) || imported;
+        mergeResult(importService_.importFiles({normalizedPath}, selectedPlaylistId_ == 0 ? std::vector<PlaylistId>{} : std::vector<PlaylistId>{selectedPlaylistId_}));
     }
-
+    lastImportResultText_ = importResultText(combined);
+    reloadLibrary();
     addSongsMenuOpen_ = false;
     resetAddSongsMenuState(true);
-    if (!imported) {
-        rebuildScene();
-        return;
-    }
-
-    hasCurrentSong_ = true;
-    currentSongElapsedSeconds_ = 0.0f;
-    if (currentSongDurationSeconds_ <= 0.0f) {
-        currentSongDurationSeconds_ = 180.0f;
-    }
     if (!normalizedPlaylistSearchQuery_.empty()) {
         rebuildPlaylistTrackFilter();
     }
@@ -4199,7 +4195,7 @@ void App::updateLastImportDirectory(const std::vector<std::filesystem::path>& pa
         const std::filesystem::path directory = normalizedPath.parent_path();
         if (!directory.empty() && std::filesystem::is_directory(directory, error)) {
             lastImportDirectory_ = directory;
-            saveLastImportDirectory(lastImportDirectory_);
+            libraryStore_.setSetting("last_import_directory", lastImportDirectory_.string());
             return;
         }
     }
@@ -4327,16 +4323,38 @@ bool App::playlistSearchFieldContains(float x, float y) const
 void App::togglePlayback()
 {
     if (!hasCurrentSong_) {
+        playSelectedSource(false);
         return;
     }
 
-    playing_ = !playing_;
+    if (playing_) {
+        audioPlayer_.pause();
+        playbackStats_.pause(std::chrono::steady_clock::now());
+        flushPlaybackStats();
+        playing_ = false;
+    } else {
+        audioPlayer_.resume();
+        playing_ = true;
+    }
+    updateMpris();
     rebuildScene();
+}
+
+void App::toggleTrackPlayback(const TrackId& trackId)
+{
+    if (playbackQueue_.current() && *playbackQueue_.current() == trackId) {
+        togglePlayback();
+        return;
+    }
+    playTrack(trackId);
 }
 
 void App::toggleShuffle()
 {
     shuffleEnabled_ = !shuffleEnabled_;
+    playbackQueue_.setShuffle(shuffleEnabled_);
+    libraryStore_.setSetting("shuffle", shuffleEnabled_ ? "1" : "0");
+    updateMpris();
     if (Primitive* primitive = primitives_.find(shuffleButtonId_)) {
         if (auto* button = std::get_if<ButtonPrimitive>(&primitive->geometry)) {
             button->iconColor = shuffleEnabled_ ? rgb(167, 192, 128) : rgb(133, 146, 137);
@@ -4358,6 +4376,10 @@ void App::toggleVolumeMute()
         volumeMuted_ = true;
     }
 
+    audioPlayer_.setVolume(volume_);
+    audioPlayer_.setMuted(volumeMuted_);
+    libraryStore_.setSetting("mute", volumeMuted_ ? "1" : "0");
+    updateMpris();
     refreshVolumeControl();
 }
 
@@ -4368,6 +4390,11 @@ void App::setVolumeFromPointer(float x)
         volumeBeforeMute_ = volume_;
     }
     volumeMuted_ = false;
+    audioPlayer_.setVolume(volume_);
+    audioPlayer_.setMuted(false);
+    libraryStore_.setSetting("volume", std::to_string(volume_));
+    libraryStore_.setSetting("mute", "0");
+    updateMpris();
     refreshVolumeControl();
 }
 
@@ -4379,6 +4406,10 @@ void App::setMediaProgressFromPointer(float x)
 
     const float progress = std::clamp((x - mediaProgressSliderX_) / mediaProgressSliderWidth_, 0.0f, 1.0f);
     currentSongElapsedSeconds_ = currentSongDurationSeconds_ * progress;
+    audioPlayer_.seek(static_cast<std::int64_t>(currentSongElapsedSeconds_ * 1000.0f));
+    playbackStats_.seek(std::chrono::steady_clock::now());
+    mprisService_.emitSeeked(static_cast<std::int64_t>(currentSongElapsedSeconds_ * 1'000'000.0f));
+    updateMpris();
     refreshMediaProgressControl();
 }
 
@@ -4402,7 +4433,253 @@ bool App::volumeSliderContains(float x, float y) const
 
 bool App::canSeekMediaProgress() const
 {
-    return hasCurrentSong_ && playing_ && currentSongDurationSeconds_ > 0.0f;
+    return hasCurrentSong_ && currentSongDurationSeconds_ > 0.0f;
+}
+
+std::vector<TrackId> App::selectedSourceTrackIds() const
+{
+    if (selectedPlaylistId_ == 0) {
+        std::vector<TrackId> ids;
+        ids.reserve(tracks_.size());
+        for (const Track& track : tracks_) {
+            ids.push_back(track.id);
+        }
+        return ids;
+    }
+    const auto playlist = std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id);
+    return playlist == playlists_.end() ? std::vector<TrackId>{} : playlist->trackIndexes;
+}
+
+bool App::selectedSourceIsCurrent() const
+{
+    const std::optional<PlaylistId> selectedSourceId = selectedPlaylistId_ == 0
+        ? std::nullopt
+        : std::optional<PlaylistId>{selectedPlaylistId_};
+    return playbackQueue_.current() && playbackQueue_.sourcePlaylistId() == selectedSourceId;
+}
+
+void App::playTrack(const TrackId& trackId, bool shuffle)
+{
+    std::vector<TrackId> source = selectedSourceTrackIds();
+    if (std::ranges::find(source, trackId) == source.end()) {
+        return;
+    }
+    if (playbackStats_.active()) {
+        playbackStats_.finish(false, playbackQueue_.current() != trackId, std::chrono::steady_clock::now());
+        flushPlaybackStats();
+    }
+    playbackQueue_.start(
+        std::move(source),
+        selectedPlaylistId_ == 0 ? std::nullopt : std::optional<PlaylistId>{selectedPlaylistId_},
+        trackId,
+        shuffle);
+    shuffleEnabled_ = shuffle;
+    libraryStore_.setSetting("shuffle", shuffleEnabled_ ? "1" : "0");
+    startCurrentTrack();
+}
+
+void App::playSelectedSource(bool shuffle)
+{
+    const std::vector<TrackId> source = selectedSourceTrackIds();
+    if (source.empty()) {
+        return;
+    }
+    if (selectedSourceIsCurrent() && !shuffle) {
+        audioPlayer_.resume();
+        playing_ = true;
+        updateMpris();
+        rebuildScene();
+        return;
+    }
+    if (playbackStats_.active()) {
+        playbackStats_.finish(false, true, std::chrono::steady_clock::now());
+        flushPlaybackStats();
+    }
+    playbackQueue_.start(
+        source,
+        selectedPlaylistId_ == 0 ? std::nullopt : std::optional<PlaylistId>{selectedPlaylistId_},
+        shuffle ? TrackId{} : source.front(),
+        shuffle);
+    shuffleEnabled_ = shuffle;
+    libraryStore_.setSetting("shuffle", shuffleEnabled_ ? "1" : "0");
+    startCurrentTrack();
+}
+
+void App::startCurrentTrack()
+{
+    while (playbackQueue_.current()) {
+        const Track* track = findTrack(*playbackQueue_.current());
+        if (track != nullptr && track->available && audioPlayer_.play(track->path)) {
+            hasCurrentSong_ = true;
+            playing_ = true;
+            currentSongElapsedSeconds_ = 0.0f;
+            currentSongDurationSeconds_ = static_cast<float>(track->durationMs) / 1000.0f;
+            playbackStats_.start(
+                track->id,
+                playbackQueue_.sourcePlaylistId(),
+                track->durationMs,
+                currentTimeMs(),
+                std::chrono::steady_clock::now());
+            updateMpris();
+            rebuildScene();
+            return;
+        }
+        playbackQueue_.next();
+    }
+    hasCurrentSong_ = false;
+    playing_ = false;
+    currentSongElapsedSeconds_ = 0.0f;
+    currentSongDurationSeconds_ = 0.0f;
+    updateMpris();
+    rebuildScene();
+}
+
+void App::playNext(bool userInitiated)
+{
+    if (!playbackQueue_.current()) {
+        return;
+    }
+    playbackStats_.finish(false, userInitiated, std::chrono::steady_clock::now());
+    flushPlaybackStats();
+    playbackQueue_.next();
+    startCurrentTrack();
+}
+
+void App::playPrevious()
+{
+    if (!playbackQueue_.current()) {
+        return;
+    }
+    if (audioPlayer_.positionMs() > 3000) {
+        audioPlayer_.seek(0);
+        playbackStats_.seek(std::chrono::steady_clock::now());
+        return;
+    }
+    if (playbackQueue_.history().empty()) {
+        audioPlayer_.seek(0);
+        playbackStats_.seek(std::chrono::steady_clock::now());
+        return;
+    }
+    playbackStats_.finish(false, true, std::chrono::steady_clock::now());
+    flushPlaybackStats();
+    if (playbackQueue_.previous()) {
+        startCurrentTrack();
+    }
+}
+
+void App::flushPlaybackStats()
+{
+    const std::vector<StatisticDelta> deltas = playbackStats_.takeDeltas(std::chrono::steady_clock::now());
+    libraryStore_.applyStatisticDeltas(deltas);
+    nextStatsFlush_ = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    if (!deltas.empty() && sceneReady_) {
+        rebuildScene();
+    }
+}
+
+void App::pollPlayback()
+{
+    const auto now = std::chrono::steady_clock::now();
+    playbackStats_.tick(audioPlayer_.actuallyPlaying(), now);
+    if (now >= nextStatsFlush_) {
+        flushPlaybackStats();
+    }
+    for (const AudioPlayer::Event& event : audioPlayer_.pollEvents()) {
+        if (event.type == AudioPlayer::EventType::Eos) {
+            playbackStats_.finish(true, false, now);
+            flushPlaybackStats();
+            playbackQueue_.next();
+            startCurrentTrack();
+            return;
+        }
+        if (event.type == AudioPlayer::EventType::Error) {
+            playbackStats_.finish(false, false, now);
+            flushPlaybackStats();
+            playbackQueue_.next();
+            startCurrentTrack();
+            return;
+        }
+    }
+    if (hasCurrentSong_) {
+        const float position = static_cast<float>(audioPlayer_.positionMs()) / 1000.0f;
+        const float duration = static_cast<float>(audioPlayer_.durationMs()) / 1000.0f;
+        if (!draggingMediaProgressSlider_) {
+            currentSongElapsedSeconds_ = position;
+            if (duration > 0.0f) currentSongDurationSeconds_ = duration;
+            refreshMediaProgressControl();
+        }
+        mprisService_.updatePosition(audioPlayer_.positionMs() * 1000);
+    }
+}
+
+void App::handleMprisCommands()
+{
+    for (const MprisService::Command& command : mprisService_.takeCommands()) {
+        switch (command.type) {
+        case MprisService::CommandType::Play: if (!playing_) togglePlayback(); break;
+        case MprisService::CommandType::Pause: if (playing_) togglePlayback(); break;
+        case MprisService::CommandType::PlayPause: togglePlayback(); break;
+        case MprisService::CommandType::Next: playNext(true); break;
+        case MprisService::CommandType::Previous: playPrevious(); break;
+        case MprisService::CommandType::Seek:
+            audioPlayer_.seek(audioPlayer_.positionMs() + command.positionUs / 1000);
+            playbackStats_.seek(std::chrono::steady_clock::now());
+            mprisService_.emitSeeked(audioPlayer_.positionMs() * 1000);
+            break;
+        case MprisService::CommandType::SetPosition:
+            audioPlayer_.seek(command.positionUs / 1000);
+            playbackStats_.seek(std::chrono::steady_clock::now());
+            mprisService_.emitSeeked(command.positionUs);
+            break;
+        case MprisService::CommandType::SetShuffle:
+            if (shuffleEnabled_ != command.boolean) toggleShuffle();
+            break;
+        case MprisService::CommandType::SetVolume:
+            volume_ = std::clamp(static_cast<float>(command.number), 0.0f, 1.0f);
+            volumeMuted_ = false;
+            audioPlayer_.setVolume(volume_);
+            audioPlayer_.setMuted(false);
+            libraryStore_.setSetting("volume", std::to_string(volume_));
+            libraryStore_.setSetting("mute", "0");
+            updateMpris();
+            refreshVolumeControl();
+            break;
+        }
+    }
+}
+
+void App::updateMpris()
+{
+    std::optional<MprisService::Metadata> metadata;
+    if (playbackQueue_.current()) {
+        if (const Track* track = findTrack(*playbackQueue_.current())) {
+            metadata = MprisService::Metadata{
+                .trackId = track->id,
+                .title = track->title,
+                .album = track->album,
+                .artists = track->artists,
+                .durationUs = track->durationMs * 1000,
+                .artworkPath = track->artworkPath,
+            };
+        }
+    }
+    mprisService_.update(
+        hasCurrentSong_ ? (playing_ ? "Playing" : "Paused") : "Stopped",
+        audioPlayer_.positionMs() * 1000,
+        volumeMuted_ ? 0.0 : volume_,
+        shuffleEnabled_,
+        std::move(metadata));
+}
+
+bool App::confirmPlaylistDeletion(PlaylistId id) const
+{
+    const auto playlist = std::ranges::find(playlists_, id, &Playlist::id);
+    if (playlist == playlists_.end()) {
+        return false;
+    }
+    const std::string command = "zenity --question --title='Delete Playlist' --text="
+        + shellQuote("Delete playlist \"" + playlist->name + "\"? Songs will remain in your library.");
+    return std::system(command.c_str()) == 0;
 }
 
 void App::clampTextEditState(TextEditState& state, const std::string& text) const
@@ -4491,17 +4768,33 @@ void App::refreshMediaProgressControl()
         ? std::clamp(currentSongElapsedSeconds_ / currentSongDurationSeconds_, 0.0f, 1.0f)
         : 0.0f;
     bool textChanged = false;
+    bool drawChanged = false;
 
     if (Primitive* primitive = primitives_.find(mediaProgressSliderFillId_)) {
         if (auto* fill = std::get_if<RoundedRectPrimitive>(&primitive->geometry)) {
-            fill->width = mediaProgressSliderWidth_ * progress;
+            const float width = mediaProgressSliderWidth_ * progress;
+            if (std::abs(fill->width - width) >= 0.5f) {
+                fill->width = width;
+                drawChanged = true;
+            }
         }
     }
 
     if (Primitive* primitive = primitives_.find(mediaProgressSliderKnobId_)) {
         if (auto* knob = std::get_if<CirclePrimitive>(&primitive->geometry)) {
-            knob->centerX = mediaProgressSliderX_ + mediaProgressSliderWidth_ * progress;
-            primitive->style.fill = canSeekMediaProgress() ? rgb(211, 198, 170) : rgb(133, 146, 137);
+            const float centerX = mediaProgressSliderX_ + mediaProgressSliderWidth_ * progress;
+            const Color fill = canSeekMediaProgress() ? rgb(211, 198, 170) : rgb(133, 146, 137);
+            if (std::abs(knob->centerX - centerX) >= 0.5f) {
+                knob->centerX = centerX;
+                drawChanged = true;
+            }
+            if (primitive->style.fill.r != fill.r
+                || primitive->style.fill.g != fill.g
+                || primitive->style.fill.b != fill.b
+                || primitive->style.fill.a != fill.a) {
+                primitive->style.fill = fill;
+                drawChanged = true;
+            }
         }
     }
 
@@ -4525,7 +4818,9 @@ void App::refreshMediaProgressControl()
         }
     }
 
-    refreshPrimitives(textChanged ? VulkanRenderer::PrimitiveUpdate::Text : VulkanRenderer::PrimitiveUpdate::DrawOnly);
+    if (textChanged || drawChanged) {
+        refreshPrimitives(textChanged ? VulkanRenderer::PrimitiveUpdate::Text : VulkanRenderer::PrimitiveUpdate::DrawOnly);
+    }
 }
 
 void App::rebuildScene()
@@ -4550,6 +4845,11 @@ void App::rebuildScene()
 
 void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
 {
+    if (event.type == WaylandWindow::PointerEventType::ButtonPress) {
+        draggingMediaProgressSlider_ = false;
+        draggingVolumeSlider_ = false;
+    }
+
     if (addSongsAudioScanActive_) {
         window_.setCursor(WaylandWindow::CursorShape::Default);
         return;
@@ -5040,10 +5340,30 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         refreshPrimitives();
     }
 
+    if (event.type == WaylandWindow::PointerEventType::ButtonRelease
+        && releasedButton == 0
+        && hoveredPlaylistSlot != static_cast<std::size_t>(-1)) {
+        const Track* track = displayedPlaylistTrack(playlistFirstVisibleRow_ + hoveredPlaylistSlot);
+        if (track != nullptr) {
+            constexpr std::uint32_t doubleClickIntervalMs = 400;
+            const bool doubleClick = track->id == lastClickedPlaylistTrackId_
+                && event.timeMs - lastPlaylistTrackClickTimeMs_ <= doubleClickIntervalMs;
+            lastClickedPlaylistTrackId_ = track->id;
+            lastPlaylistTrackClickTimeMs_ = event.timeMs;
+            if (doubleClick) {
+                lastClickedPlaylistTrackId_.clear();
+                toggleTrackPlayback(track->id);
+                return;
+            }
+        }
+    }
+
     if (releasedButton != 0) {
         if (Primitive* primitive = primitives_.find(releasedButton)) {
             if (auto* button = std::get_if<ButtonPrimitive>(&primitive->geometry); button != nullptr && button->onClick) {
-                button->onClick();
+                // Callbacks may rebuild the scene and destroy the button that owns them.
+                const std::function<void()> onClick = button->onClick;
+                onClick();
 
                 bool hasPostClickHoveredButton = false;
                 for (Primitive& postClickPrimitive : primitives_.all()) {

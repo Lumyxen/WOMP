@@ -133,7 +133,7 @@ WaylandWindow::~WaylandWindow()
     }
 }
 
-bool WaylandWindow::pollEvents(std::int32_t timeoutMilliseconds)
+bool WaylandWindow::pollEvents(std::int32_t timeoutMilliseconds, int wakeFd)
 {
     const auto dispatchPending = [this]() {
         const int dispatched = wl_display_dispatch_pending(display_);
@@ -162,13 +162,13 @@ bool WaylandWindow::pollEvents(std::int32_t timeoutMilliseconds)
 
     wl_display_flush(display_);
 
-    pollfd descriptor{
-        .fd = wl_display_get_fd(display_),
-        .events = POLLIN,
-        .revents = 0,
+    pollfd descriptors[2]{
+        {.fd = wl_display_get_fd(display_), .events = POLLIN, .revents = 0},
+        {.fd = wakeFd, .events = POLLIN, .revents = 0},
     };
+    const nfds_t descriptorCount = wakeFd >= 0 ? 2 : 1;
 
-    if (poll(&descriptor, 1, timeoutMilliseconds) > 0 && (descriptor.revents & POLLIN) != 0) {
+    if (poll(descriptors, descriptorCount, timeoutMilliseconds) > 0 && (descriptors[0].revents & POLLIN) != 0) {
         if (wl_display_read_events(display_) == -1) {
             return false;
         }
@@ -374,7 +374,7 @@ void WaylandWindow::pointerButton(
     void* data,
     wl_pointer*,
     std::uint32_t,
-    std::uint32_t,
+    std::uint32_t time,
     std::uint32_t button,
     std::uint32_t state)
 {
@@ -388,6 +388,7 @@ void WaylandWindow::pointerButton(
         .x = window->pointerX_,
         .y = window->pointerY_,
         .button = button,
+        .timeMs = time,
     });
 }
 

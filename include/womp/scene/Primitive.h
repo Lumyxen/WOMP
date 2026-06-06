@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -101,6 +102,14 @@ struct SvgPrimitive {
     SvgRenderMode renderMode = SvgRenderMode::Color;
 };
 
+struct ImagePrimitive {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+    std::string source;
+};
+
 struct TextFieldPrimitive {
     float x = 0.0f;
     float y = 0.0f;
@@ -164,6 +173,7 @@ using PrimitiveGeometry = std::variant<
     LinePrimitive,
     TextPrimitive,
     SvgPrimitive,
+    ImagePrimitive,
     TextFieldPrimitive,
     ButtonPrimitive>;
 
@@ -181,6 +191,7 @@ struct Primitive {
     static Primitive line(LinePrimitive geometry, PrimitiveStyle style = {});
     static Primitive text(TextPrimitive geometry, PrimitiveStyle style = {});
     static Primitive svg(SvgPrimitive geometry, PrimitiveStyle style = {});
+    static Primitive image(ImagePrimitive geometry, PrimitiveStyle style = {});
     static Primitive textField(TextFieldPrimitive geometry, PrimitiveStyle style = {});
     static Primitive button(ButtonPrimitive geometry, PrimitiveStyle style = {});
 };
@@ -203,11 +214,9 @@ public:
     std::vector<Primitive> visible() const;
 
 private:
-    std::vector<Primitive>::iterator findIterator(PrimitiveId id);
-    std::vector<Primitive>::const_iterator findIterator(PrimitiveId id) const;
-
     PrimitiveId nextId_ = 1;
     std::vector<Primitive> primitives_;
+    std::unordered_map<PrimitiveId, std::size_t> indexesById_;
 };
 
 } // namespace womp

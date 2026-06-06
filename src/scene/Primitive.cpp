@@ -61,6 +61,14 @@ Primitive Primitive::svg(SvgPrimitive geometry, PrimitiveStyle style)
     };
 }
 
+Primitive Primitive::image(ImagePrimitive geometry, PrimitiveStyle style)
+{
+    return {
+        .geometry = std::move(geometry),
+        .style = style,
+    };
+}
+
 Primitive Primitive::textField(TextFieldPrimitive geometry, PrimitiveStyle style)
 {
     return {
@@ -85,36 +93,43 @@ PrimitiveId PrimitiveStore::add(Primitive primitive)
         nextId_ = std::max(nextId_, primitive.id + 1);
     }
 
-    primitives_.push_back(primitive);
+    indexesById_[primitive.id] = primitives_.size();
+    primitives_.push_back(std::move(primitive));
     return primitives_.back().id;
 }
 
 bool PrimitiveStore::remove(PrimitiveId id)
 {
-    const auto primitive = findIterator(id);
-    if (primitive == primitives_.end()) {
+    const auto found = indexesById_.find(id);
+    if (found == indexesById_.end()) {
         return false;
     }
 
-    primitives_.erase(primitive);
+    const std::size_t index = found->second;
+    primitives_.erase(primitives_.begin() + static_cast<std::ptrdiff_t>(index));
+    indexesById_.erase(found);
+    for (std::size_t shiftedIndex = index; shiftedIndex < primitives_.size(); ++shiftedIndex) {
+        indexesById_[primitives_[shiftedIndex].id] = shiftedIndex;
+    }
     return true;
 }
 
 void PrimitiveStore::clear()
 {
     primitives_.clear();
+    indexesById_.clear();
 }
 
 Primitive* PrimitiveStore::find(PrimitiveId id)
 {
-    const auto primitive = findIterator(id);
-    return primitive != primitives_.end() ? &*primitive : nullptr;
+    const auto found = indexesById_.find(id);
+    return found != indexesById_.end() ? &primitives_[found->second] : nullptr;
 }
 
 const Primitive* PrimitiveStore::find(PrimitiveId id) const
 {
-    const auto primitive = findIterator(id);
-    return primitive != primitives_.end() ? &*primitive : nullptr;
+    const auto found = indexesById_.find(id);
+    return found != indexesById_.end() ? &primitives_[found->second] : nullptr;
 }
 
 bool PrimitiveStore::setVisible(PrimitiveId id, bool visible)
@@ -160,16 +175,6 @@ std::vector<Primitive> PrimitiveStore::visible() const
     }
 
     return result;
-}
-
-std::vector<Primitive>::iterator PrimitiveStore::findIterator(PrimitiveId id)
-{
-    return std::ranges::find(primitives_, id, &Primitive::id);
-}
-
-std::vector<Primitive>::const_iterator PrimitiveStore::findIterator(PrimitiveId id) const
-{
-    return std::ranges::find(primitives_, id, &Primitive::id);
 }
 
 } // namespace womp

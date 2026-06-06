@@ -19,7 +19,8 @@ public:
         DrawOnly = 0,
         Text = 1,
         Svg = 2,
-        Full = 3,
+        Image = 4,
+        Full = 7,
     };
 
     explicit VulkanRenderer(WaylandWindow& window);

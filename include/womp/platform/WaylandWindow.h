@@ -35,6 +35,7 @@ public:
         float y = 0.0f;
         float scrollY = 0.0f;
         std::uint32_t button = 0;
+        std::uint32_t timeMs = 0;
     };
 
     enum class KeyEventType {
@@ -56,7 +57,7 @@ public:
     WaylandWindow(const WaylandWindow&) = delete;
     WaylandWindow& operator=(const WaylandWindow&) = delete;
 
-    bool pollEvents(std::int32_t timeoutMilliseconds = 0);
+    bool pollEvents(std::int32_t timeoutMilliseconds = 0, int wakeFd = -1);
     bool takeResizeFlag();
     void setPointerEventHandler(std::function<void(const PointerEvent&)> handler);
     void setKeyEventHandler(std::function<void(const KeyEvent&)> handler);
