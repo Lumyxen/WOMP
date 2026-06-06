@@ -38,6 +38,7 @@ private:
     struct Playlist {
         PlaylistId id = 0;
         std::string name;
+        std::chrono::system_clock::time_point createdAt;
         std::vector<std::size_t> trackIndexes;
         std::unordered_set<std::size_t> trackIndexSet;
     };
@@ -47,12 +48,29 @@ private:
         std::string title;
     };
 
+    struct PlaylistTrackRowPrimitives {
+        PrimitiveId background = 0;
+        PrimitiveId coverTile = 0;
+        PrimitiveId coverIcon = 0;
+        PrimitiveId title = 0;
+        PrimitiveId fileTypeBadgeBackground = 0;
+        PrimitiveId fileTypeBadge = 0;
+        PrimitiveId album = 0;
+        PrimitiveId artist = 0;
+        PrimitiveId duration = 0;
+        PrimitiveId hoveredDuration = 0;
+        PrimitiveId playButton = 0;
+        PrimitiveId ellipsisButton = 0;
+        bool active = false;
+    };
+
     enum class DirectoryImportMode {
         Playlist,
         Files,
     };
 
     void selectPlaylist(PlaylistId id);
+    void createPlaylist();
     bool addTrackToPlaylist(PlaylistId playlistId, std::size_t trackIndex);
     void toggleAddSongsMenu();
     void closeAddSongsMenu();
@@ -73,8 +91,8 @@ private:
     void rebuildPendingSongFilter();
     std::size_t pendingSongMatchCount() const;
     void refreshAudioScanProgress();
-    void resetAddSongsCaretBlink();
-    void updateAddSongsCaretBlink();
+    void resetSearchCaretBlink();
+    void updateSearchCaretBlink();
     std::int32_t eventPollTimeoutMilliseconds(bool needsDraw) const;
     void togglePlayback();
     void toggleShuffle();
@@ -89,11 +107,26 @@ private:
     std::vector<Primitive> renderPrimitives(VulkanRenderer::PrimitiveUpdate update) const;
     bool addSongsMenuContains(float x, float y) const;
     bool addSongsSearchFieldContains(float x, float y) const;
+    bool playlistSearchFieldContains(float x, float y) const;
     bool mediaProgressSliderContains(float x, float y) const;
     bool volumeSliderContains(float x, float y) const;
     bool canSeekMediaProgress() const;
     void refreshVolumeControl();
     void refreshMediaProgressControl();
+    void setPlaylistSearchQuery(std::string query);
+    void rebuildPlaylistTrackFilter();
+    const Track* displayedPlaylistTrack(std::size_t displayedIndex) const;
+    std::size_t displayedPlaylistTrackCount() const;
+    std::string playlistTrackFileTypeBadge(const Track& track) const;
+    std::size_t playlistTrackMaxFirstVisibleRow() const;
+    void setPlaylistFirstVisibleRow(std::size_t firstVisibleRow);
+    void refreshPlaylistTrackRows();
+    void refreshPlaylistTrackRowHover(std::size_t hoveredSlot);
+    void clearPlaylistTrackRowHover();
+    bool playlistTrackViewportContains(float x, float y) const;
+    std::size_t sidebarPlaylistMaxFirstVisibleRow() const;
+    void setSidebarPlaylistFirstVisibleRow(std::size_t firstVisibleRow);
+    bool sidebarPlaylistViewportContains(float x, float y) const;
 
     WaylandWindow window_;
     VulkanRenderer renderer_;
@@ -108,9 +141,9 @@ private:
     bool addSongsSearchFocused_ = false;
     bool addSongsDirectoryOptionsVisible_ = false;
     bool addSongsPlaylistDropdownOpen_ = false;
-    bool addSongsCaretVisible_ = true;
+    bool searchCaretVisible_ = true;
     bool addSongsAudioScanActive_ = false;
-    std::chrono::steady_clock::time_point nextAddSongsCaretBlink_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point nextSearchCaretBlink_ = std::chrono::steady_clock::now();
     std::future<std::vector<PendingAudioFile>> pendingAudioScan_;
     std::shared_ptr<AudioScanProgress> pendingAudioScanProgress_;
     std::uint64_t renderedAudioScanProgressRevision_ = 0;
@@ -133,6 +166,40 @@ private:
     bool volumeMuted_ = false;
     bool draggingPendingSongsScrollbar_ = false;
     float pendingSongsScrollbarDragOffsetY_ = 0.0f;
+    std::size_t sidebarPlaylistFirstVisibleRow_ = 0;
+    bool draggingSidebarPlaylistScrollbar_ = false;
+    float sidebarPlaylistScrollbarDragOffsetY_ = 0.0f;
+    float sidebarPlaylistViewportX_ = 0.0f;
+    float sidebarPlaylistViewportY_ = 0.0f;
+    float sidebarPlaylistViewportWidth_ = 0.0f;
+    float sidebarPlaylistViewportHeight_ = 0.0f;
+    float sidebarPlaylistScrollbarTrackX_ = 0.0f;
+    float sidebarPlaylistScrollbarTrackY_ = 0.0f;
+    float sidebarPlaylistScrollbarTrackWidth_ = 0.0f;
+    float sidebarPlaylistScrollbarTrackHeight_ = 0.0f;
+    float sidebarPlaylistScrollbarThumbY_ = 0.0f;
+    float sidebarPlaylistScrollbarThumbHeight_ = 0.0f;
+    bool playlistSearchFocused_ = false;
+    std::string playlistSearchQuery_;
+    std::string normalizedPlaylistSearchQuery_;
+    std::vector<std::size_t> filteredPlaylistTrackIndexes_;
+    std::size_t playlistFirstVisibleRow_ = 0;
+    std::size_t hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
+    bool draggingPlaylistScrollbar_ = false;
+    float playlistScrollbarDragOffsetY_ = 0.0f;
+    float playlistTrackViewportX_ = 0.0f;
+    float playlistTrackViewportY_ = 0.0f;
+    float playlistTrackViewportWidth_ = 0.0f;
+    float playlistTrackViewportHeight_ = 0.0f;
+    float playlistScrollbarTrackX_ = 0.0f;
+    float playlistScrollbarTrackY_ = 0.0f;
+    float playlistScrollbarTrackWidth_ = 0.0f;
+    float playlistScrollbarTrackHeight_ = 0.0f;
+    float playlistScrollbarThumbY_ = 0.0f;
+    float playlistScrollbarThumbHeight_ = 0.0f;
+    PrimitiveId playlistScrollbarTrackId_ = 0;
+    PrimitiveId playlistScrollbarThumbId_ = 0;
+    std::vector<PlaylistTrackRowPrimitives> playlistTrackRows_;
     bool draggingMediaProgressSlider_ = false;
     bool draggingVolumeSlider_ = false;
     float mediaProgressSliderX_ = 0.0f;
@@ -158,6 +225,7 @@ private:
     PrimitiveId audioScanPathTextId_ = 0;
     PrimitiveId audioScanProgressFillId_ = 0;
     PrimitiveId addSongsSearchFieldId_ = 0;
+    PrimitiveId playlistSearchFieldId_ = 0;
     bool primitivesDirty_ = false;
     VulkanRenderer::PrimitiveUpdate pendingPrimitiveUpdate_ = VulkanRenderer::PrimitiveUpdate::Full;
     bool sceneReady_ = false;

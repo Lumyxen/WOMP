@@ -220,6 +220,86 @@ GlyphBitmap renderGlyph(FT_Library library, const FontMatch& font, std::uint32_t
     return bitmap;
 }
 
+struct GlyphMeasurement {
+    std::uint32_t width = 0;
+    std::int32_t bearingX = 0;
+    float advance = 0.0f;
+};
+
+GlyphMeasurement measureGlyph(FT_Library library, const FontMatch& font, std::uint32_t codepoint, std::uint32_t pixelSize)
+{
+    FT_Face rawFace = nullptr;
+    if (FT_New_Face(library, font.path.c_str(), font.faceIndex, &rawFace) != 0) {
+        return {};
+    }
+
+    auto face = std::unique_ptr<std::remove_pointer_t<FT_Face>, decltype(&FT_Done_Face)>(rawFace, FT_Done_Face);
+    FT_Set_Pixel_Sizes(face.get(), 0, pixelSize);
+
+    if (FT_Load_Char(face.get(), codepoint, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT) != 0) {
+        return {};
+    }
+
+    const FT_GlyphSlot glyph = face->glyph;
+    return {
+        .width = glyph->bitmap.width,
+        .bearingX = glyph->bitmap_left,
+        .advance = static_cast<float>(glyph->advance.x) / 64.0f,
+    };
+}
+
+float measureTextVisualWidth(
+    const std::string& text,
+    const std::vector<std::string>& fontFamilies,
+    float fontSize)
+{
+    struct MeasurementCache {
+        MeasurementCache()
+        {
+            if (FT_Init_FreeType(&library) != 0) {
+                throw std::runtime_error("failed to initialize FreeType");
+            }
+        }
+
+        ~MeasurementCache()
+        {
+            FT_Done_FreeType(library);
+        }
+
+        FT_Library library = nullptr;
+        FontResolver fonts;
+        std::map<std::tuple<std::vector<std::string>, std::uint32_t, std::uint32_t>, GlyphMeasurement> glyphs;
+    };
+
+    static MeasurementCache cache;
+    const std::uint32_t pixelSize = std::max(1u, static_cast<std::uint32_t>(fontSize + 0.5f));
+    float penX = 0.0f;
+    float visualRight = 0.0f;
+
+    for (const std::uint32_t codepoint : decodeUtf8(text)) {
+        if (codepoint == '\n') {
+            penX = 0.0f;
+            continue;
+        }
+
+        const auto key = std::tuple{fontFamilies, codepoint, pixelSize};
+        const auto [it, inserted] = cache.glyphs.try_emplace(key);
+        if (inserted) {
+            if (const std::optional<FontMatch> font = cache.fonts.match(fontFamilies, codepoint)) {
+                it->second = measureGlyph(cache.library, *font, codepoint, pixelSize);
+            }
+        }
+
+        const GlyphMeasurement& glyph = it->second;
+        visualRight = std::max(
+            visualRight,
+            penX + static_cast<float>(glyph.bearingX) + static_cast<float>(glyph.width));
+        penX += glyph.advance > 0.0f ? glyph.advance : fontSize * 0.5f;
+    }
+
+    return visualRight;
+}
+
 std::vector<std::uint8_t> readFileBytes(const std::string& path)
 {
     std::ifstream file(path, std::ios::binary);
@@ -601,6 +681,14 @@ void VulkanRenderer::addPrimitive(Primitive primitive)
     }
 }
 
+float VulkanRenderer::measureTextVisualWidth(
+    const std::string& text,
+    const std::vector<std::string>& fontFamilies,
+    float fontSize) const
+{
+    return womp::measureTextVisualWidth(text, fontFamilies, fontSize);
+}
+
 void VulkanRenderer::drawFrame()
 {
     require(vkWaitForFences(device_, 1, &frameInFlight_, VK_TRUE, UINT64_MAX), "failed to wait for frame fence");
@@ -964,6 +1052,15 @@ void VulkanRenderer::createPipelines()
             .pScissors = &scissor,
         };
 
+        constexpr std::array dynamicStates{
+            VK_DYNAMIC_STATE_SCISSOR,
+        };
+        const VkPipelineDynamicStateCreateInfo dynamicState{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
+            .pDynamicStates = dynamicStates.data(),
+        };
+
         const VkPipelineRasterizationStateCreateInfo rasterizer{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .polygonMode = VK_POLYGON_MODE_FILL,
@@ -993,6 +1090,7 @@ void VulkanRenderer::createPipelines()
             .pRasterizationState = &rasterizer,
             .pMultisampleState = &multisampling,
             .pColorBlendState = &colorBlending,
+            .pDynamicState = &dynamicState,
             .layout = pipelineLayout,
             .renderPass = renderPass_,
             .subpass = 0,
@@ -1143,6 +1241,34 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
     };
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    const VkRect2D fullScissor{
+        .offset = {0, 0},
+        .extent = swapchainExtent_,
+    };
+    const auto primitiveScissor = [&](const Primitive& primitive) {
+        if (!primitive.clip) {
+            return fullScissor;
+        }
+
+        const float maxX = static_cast<float>(swapchainExtent_.width);
+        const float maxY = static_cast<float>(swapchainExtent_.height);
+        const float left = std::clamp(std::floor(primitive.clip->x), 0.0f, maxX);
+        const float top = std::clamp(std::floor(primitive.clip->y), 0.0f, maxY);
+        const float right = std::clamp(std::ceil(primitive.clip->x + primitive.clip->width), left, maxX);
+        const float bottom = std::clamp(std::ceil(primitive.clip->y + primitive.clip->height), top, maxY);
+        return VkRect2D{
+            .offset = {
+                static_cast<std::int32_t>(left),
+                static_cast<std::int32_t>(top),
+            },
+            .extent = {
+                static_cast<std::uint32_t>(right - left),
+                static_cast<std::uint32_t>(bottom - top),
+            },
+        };
+    };
+
+    vkCmdSetScissor(commandBuffer, 0, 1, &fullScissor);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backgroundPipeline_);
     vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
@@ -1151,6 +1277,12 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
             if (!primitive.visible) {
                 continue;
             }
+
+            const VkRect2D scissor = primitiveScissor(primitive);
+            if (scissor.extent.width == 0 || scissor.extent.height == 0) {
+                continue;
+            }
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
             const auto drawSdf = [&](const Primitive& sdfPrimitive) {
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sdfPipeline_);

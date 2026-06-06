@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +34,10 @@ public:
     void drawFrame();
     void recreateSwapchain();
     void waitIdle() const;
+    float measureTextVisualWidth(
+        const std::string& text,
+        const std::vector<std::string>& fontFamilies,
+        float fontSize) const;
 
 private:
     struct QueueFamily {

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -22,6 +23,13 @@ struct PrimitiveStyle {
     Color fill{};
     Color stroke{};
     float strokeWidth = 0.0f;
+};
+
+struct PrimitiveClipRect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
 };
 
 struct RoundedRectPrimitive {
@@ -159,6 +167,7 @@ struct Primitive {
     PrimitiveGeometry geometry = RoundedRectPrimitive{};
     PrimitiveStyle style{};
     bool visible = true;
+    std::optional<PrimitiveClipRect> clip;
 
     static Primitive roundedRect(RoundedRectPrimitive geometry, PrimitiveStyle style = {});
     static Primitive circle(CirclePrimitive geometry, PrimitiveStyle style = {});

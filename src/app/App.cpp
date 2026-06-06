@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -15,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <sstream>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -121,9 +123,38 @@ constexpr float addSongsFullListHorizontalPadding = 20.0f;
 constexpr float addSongsFullListScrollbarWidth = 6.0f;
 constexpr float addSongsFullListScrollbarHitWidth = 8.0f;
 constexpr float addSongsFullListScrollbarInset = 1.0f;
+constexpr float sidebarPlaylistButtonHeight = 56.0f;
+constexpr float sidebarPlaylistButtonGap = 8.0f;
+constexpr float sidebarPlaylistRowStride = sidebarPlaylistButtonHeight + sidebarPlaylistButtonGap;
+constexpr float sidebarPlaylistScrollbarWidth = 4.0f;
+constexpr float sidebarPlaylistScrollbarHitWidth = 14.0f;
+constexpr float sidebarPlaylistScrollbarMinThumbHeight = 28.0f;
+constexpr float sidebarPlaylistScrollbarBottomInset = 8.0f;
+constexpr float sidebarPlaylistEndPadding = 8.0f;
+constexpr float playlistTrackRowHeight = 80.0f;
+constexpr float playlistTrackRowGap = 8.0f;
+constexpr float playlistTrackRowStride = playlistTrackRowHeight + playlistTrackRowGap;
+constexpr float playlistTrackCoverSize = 64.0f;
+constexpr float playlistTrackScrollbarWidth = 5.0f;
+constexpr float playlistTrackScrollbarHitWidth = 14.0f;
+constexpr float playlistTrackScrollbarInset = 2.0f;
+constexpr float playlistSearchFieldHeight = 36.0f;
+constexpr float playlistSearchFieldGap = 14.0f;
+constexpr float playlistTrackTitleFontSize = 15.0f;
+constexpr float playlistTrackTitleCharacterWidth = 7.8f;
+constexpr float playlistTrackTitleYInset = 19.0f;
+constexpr float playlistTrackFileTypeBadgeFontSize = 10.0f;
+constexpr float playlistTrackFileTypeBadgeCharacterWidth = 5.5f;
+constexpr float playlistTrackFileTypeBadgeHorizontalPadding = 4.0f;
+constexpr float playlistTrackFileTypeBadgeGap = 8.0f;
+constexpr float playlistTrackFileTypeBadgeHeight = 16.0f;
+constexpr float playlistTrackFileTypeBadgeYInset = playlistTrackTitleYInset
+    + (playlistTrackTitleFontSize * 1.25f - playlistTrackFileTypeBadgeHeight) * 0.5f;
+constexpr float playlistTrackFileTypeBadgeTextYInset =
+    (playlistTrackFileTypeBadgeHeight - playlistTrackFileTypeBadgeFontSize * 1.25f) * 0.5f;
 constexpr float floatingMenuMargin = 16.0f;
 constexpr char zenityPathSeparator = '\x1f';
-constexpr std::chrono::milliseconds addSongsCaretBlinkInterval{500};
+constexpr std::chrono::milliseconds searchCaretBlinkInterval{500};
 
 struct Rect {
     float x = 0.0f;
@@ -459,6 +490,30 @@ std::string formatGroupedNumber(std::size_t value, char separator)
         formatted.push_back(digits[index]);
     }
     return formatted;
+}
+
+std::string formatPlaylistCreationTime(std::chrono::system_clock::time_point createdAt)
+{
+    const std::time_t time = std::chrono::system_clock::to_time_t(createdAt);
+    std::tm localTime{};
+    if (localtime_r(&time, &localTime) == nullptr) {
+        return "Unknown";
+    }
+
+    static constexpr std::array<std::string_view, 12> monthNames{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+    const int hour = localTime.tm_hour % 12 == 0 ? 12 : localTime.tm_hour % 12;
+
+    std::ostringstream formatted;
+    formatted << monthNames[localTime.tm_mon] << ' ' << localTime.tm_mday << ", "
+              << localTime.tm_year + 1900 << ' ' << hour << ':';
+    if (localTime.tm_min < 10) {
+        formatted << '0';
+    }
+    formatted << localTime.tm_min << (localTime.tm_hour < 12 ? " AM" : " PM");
+    return formatted.str();
 }
 
 std::filesystem::path loadLastImportDirectory()
@@ -893,6 +948,21 @@ std::string truncateText(std::string text, std::size_t maxCharacters)
     return text;
 }
 
+std::size_t maxTextCharacters(float width, float approximateCharacterWidth, std::size_t minimum = 1)
+{
+    return static_cast<std::size_t>(std::max(
+        static_cast<float>(minimum),
+        std::floor(std::max(0.0f, width) / approximateCharacterWidth)));
+}
+
+std::string fitTextToWidth(std::string text, float width, float approximateCharacterWidth)
+{
+    if (width < approximateCharacterWidth * 4.0f) {
+        return {};
+    }
+    return truncateText(std::move(text), maxTextCharacters(width, approximateCharacterWidth, 4));
+}
+
 float audioScanProgressFraction(const AudioScanProgressSnapshot& progress)
 {
     constexpr float indexingWeight = 0.15f;
@@ -1039,8 +1109,6 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     constexpr float timestampGap = 10.0f;
     constexpr float timestampWidth = 46.0f;
     constexpr float timestampFontSize = 13.0f;
-    constexpr float playlistButtonHeight = 56.0f;
-    constexpr float playlistButtonGap = 8.0f;
     const Color sidebarBackground = rgb(45, 53, 59);
     const Color transparent = {0.0f, 0.0f, 0.0f, 0.0f};
     const Color sidebarText = rgb(211, 198, 170);
@@ -1054,6 +1122,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const Color timestampText = rgb(211, 198, 170);
 
     const std::string addSongsIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus-icon lucide-plus"><path d="M5 12h14"/><path d="M12 5v14"/></svg>)";
+    const std::string addPlaylistIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-plus-icon lucide-list-plus"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M16 19H3"/><path d="M18 9v6"/><path d="M21 12h-6"/></svg>)";
     const std::string chevronUpIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-up-icon lucide-chevron-up"><path d="m18 15-6-6-6 6"/></svg>)";
     const std::string chevronDownIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-down-icon lucide-chevron-down"><path d="m6 9 6 6 6-6"/></svg>)";
     const std::string checkIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check-icon lucide-check"><path d="M20 6 9 17l-5-5"/></svg>)";
@@ -1063,7 +1132,10 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string pinIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin-icon lucide-pin"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>)";
     const std::string renameIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>)";
     const std::string exportIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload-icon lucide-upload"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>)";
+    const std::string deleteIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>)";
     const std::string shuffleIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shuffle-icon lucide-shuffle"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"/><path d="M2 6h1.972a4 4 0 0 1 3.6 2.2"/><path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45"/></svg>)";
+    const std::string defaultCoverIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image-icon lucide-image"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>)";
+    const std::string ellipsisIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-ellipsis-icon lucide-ellipsis"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>)";
     const std::string backwardIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-skip-back-icon lucide-skip-back"><path d="M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z"/><path d="M3 20V4"/></svg>)";
     const std::string pauseIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause-icon lucide-pause"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>)";
     const std::string playIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play-icon lucide-play"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>)";
@@ -1104,14 +1176,14 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             }));
     };
 
-    const auto addPlaylistButton = [&](PlaylistId id, std::string label, std::string iconSvg, float y) {
+    const auto addPlaylistButton = [&](PlaylistId id, std::string label, std::string iconSvg, float y, float width) {
         const bool selected = selectedPlaylistId_ == id;
-        primitives_.add(Primitive::button(
+        return primitives_.add(Primitive::button(
             {
                 .x = sidebarPadding,
                 .y = y,
-                .width = sidebarButtonWidth,
-                .height = playlistButtonHeight,
+                .width = width,
+                .height = sidebarPlaylistButtonHeight,
                 .padding = 14.0f,
                 .radius = 0.0f,
                 .fontSize = 17.0f,
@@ -1221,7 +1293,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             }));
     };
 
-    const auto addHeaderActionButton = [&](const std::string& iconSvg, float x, float y, float size, bool primary = false) {
+    const auto addHeaderActionButton = [&](const std::string& iconSvg, float x, float y, float size, bool primary = false, std::function<void()> onClick = {}) {
         primitives_.add(Primitive::button(
             {
                 .x = x,
@@ -1238,6 +1310,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 .pressedFill = primary ? iconGrey : activeFill,
                 .hoverStroke = primary ? sidebarText : border,
                 .pressedStroke = accent,
+                .onClick = std::move(onClick),
             },
             {
                 .fill = primary ? accent : transparent,
@@ -1432,9 +1505,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const float contentX = sidebarWidth + contentPadding;
     const float contentY = contentPadding;
     const float contentWidth = std::max(0.0f, windowWidth - sidebarWidth - contentPadding * 2.0f);
-    const float contentBottom = windowHeight - bottomBarHeight - contentPadding;
-    const float rowHeight = 34.0f;
-    const std::size_t maxTitleCharacters = static_cast<std::size_t>(std::max(18.0f, contentWidth / 9.0f));
+    const float contentBottom = windowHeight - bottomBarHeight;
     const Playlist* selectedPlaylist = nullptr;
     std::string selectedPlaylistName = "All Songs";
     if (selectedPlaylistId_ != 0) {
@@ -1459,13 +1530,16 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string playlistDescription = allSongsSelected
         ? "Every song in your library."
         : "No description for this playlist.";
-    const std::array<std::pair<std::string_view, std::string>, 4> playlistStats{{
+    std::vector<std::pair<std::string_view, std::string>> playlistStats{
         {"SONGS", groupedSongCount},
         {"TOTAL TIME", "0 min"},
         {"LISTENED", "0 min"},
         {"LAST PLAYED", "Never"},
-    }};
-    const std::size_t headerActionCount = allSongsSelected ? 2 : 5;
+    };
+    if (!allSongsSelected) {
+        playlistStats.emplace_back("TIME CREATED", formatPlaylistCreationTime(selectedPlaylist->createdAt));
+    }
+    const std::size_t headerActionCount = allSongsSelected ? 2 : 6;
     const float responsiveIconTileSize = std::min(
         headerIconTileSize,
         std::max(72.0f, contentWidth * 0.2f));
@@ -1476,7 +1550,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::size_t maxHeaderTitleCharacters = static_cast<std::size_t>(std::max(8.0f, headerTextWidth / 13.0f));
     const std::size_t maxHeaderDescriptionCharacters = static_cast<std::size_t>(std::max(12.0f, headerTextWidth / 7.5f));
     const float headerStatsWidth = std::max(0.0f, contentWidth - headerPadding * 2.0f);
-    const std::size_t headerStatColumnCount = headerStatsWidth >= 360.0f ? 4 : 2;
+    const std::size_t headerStatColumnCount = headerStatsWidth >= 360.0f ? playlistStats.size() : 2;
     const std::size_t headerStatRowCount = (playlistStats.size() + headerStatColumnCount - 1) / headerStatColumnCount;
     const float headerStatWidth = std::max(
         0.0f,
@@ -1574,14 +1648,17 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .strokeWidth = 0.0f,
         }));
     float headerActionX = headerActionsX;
-    const auto addHeaderAction = [&](const std::string& icon, bool primary = false) {
-        addHeaderActionButton(icon, headerActionX, headerActionsY, headerActionSize, primary);
+    const auto addHeaderAction = [&](const std::string& icon, bool primary = false, std::function<void()> onClick = {}) {
+        addHeaderActionButton(icon, headerActionX, headerActionsY, headerActionSize, primary, std::move(onClick));
         headerActionX += headerActionSize + headerActionGap;
     };
     if (!allSongsSelected) {
         addHeaderAction(pinIcon);
         addHeaderAction(renameIcon);
         addHeaderAction(exportIcon);
+        addHeaderAction(deleteIcon, false, [this, playlistId = selectedPlaylistId_]() {
+            removePlaylist(playlistId);
+        });
     }
     addHeaderAction(shuffleIcon);
     addHeaderAction(playIcon, true);
@@ -1634,65 +1711,203 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             }));
     }
 
-    float trackY = contentY + headerHeight + 18.0f;
-    std::size_t visibleTrackCount = 0;
-    const auto addTrackRow = [&](const Track& track) {
-        if (trackY + rowHeight > contentBottom) {
-            return false;
-        }
+    const float searchY = contentY + headerHeight + 18.0f;
+    playlistSearchFieldId_ = primitives_.add(Primitive::textField(
+        {
+            .x = contentX,
+            .y = searchY,
+            .width = contentWidth,
+            .height = playlistSearchFieldHeight,
+            .radius = 0.0f,
+            .padding = 10.0f,
+            .fontSize = 14.0f,
+            .caretWidth = 1.0f,
+            .text = playlistSearchQuery_,
+            .placeholder = "Search songs in playlist",
+            .textColor = sidebarText,
+            .placeholderColor = iconGrey,
+            .caretColor = sidebarText,
+            .caretCodepointIndex = playlistSearchQuery_.size(),
+            .focused = playlistSearchFocused_,
+            .caretVisible = searchCaretVisible_,
+        },
+        {
+            .fill = mantle,
+            .stroke = playlistSearchFocused_ ? accent : border,
+            .strokeWidth = 1.0f,
+        }));
 
-        primitives_.add(Primitive::roundedRect(
-            {
-                .x = contentX,
-                .y = trackY,
-                .width = contentWidth,
-                .height = rowHeight,
-                .radius = 0.0f,
-            },
-            {
-                .fill = visibleTrackCount % 2 == 0 ? rgb(43, 51, 56, 0.42f) : rgb(52, 63, 68, 0.24f),
-                .stroke = transparent,
-                .strokeWidth = 0.0f,
-            }));
-        primitives_.add(Primitive::text(
-            {
-                .x = contentX + 12.0f,
-                .y = trackY + 8.0f,
-                .fontSize = 15.0f,
-                .text = truncateText(track.title, maxTitleCharacters),
-            },
-            {
-                .fill = sidebarText,
-                .stroke = sidebarText,
-                .strokeWidth = 0.0f,
-            }));
-
-        trackY += rowHeight + 4.0f;
-        ++visibleTrackCount;
-        return true;
+    playlistTrackRows_.clear();
+    hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
+    const float trackY = searchY + playlistSearchFieldHeight + playlistSearchFieldGap;
+    const float availableTrackHeight = std::max(0.0f, contentBottom - trackY);
+    playlistTrackViewportX_ = contentX;
+    playlistTrackViewportY_ = trackY;
+    playlistTrackViewportWidth_ = std::max(0.0f, contentWidth - playlistTrackScrollbarHitWidth);
+    playlistTrackViewportHeight_ = availableTrackHeight;
+    const std::size_t visibleTrackCapacity = static_cast<std::size_t>(
+        std::ceil(playlistTrackViewportHeight_ / playlistTrackRowStride));
+    const PrimitiveClipRect trackViewportClip{
+        .x = playlistTrackViewportX_,
+        .y = playlistTrackViewportY_,
+        .width = playlistTrackViewportWidth_,
+        .height = playlistTrackViewportHeight_,
     };
 
-    if (selectedPlaylist != nullptr) {
-        for (const std::size_t trackIndex : selectedPlaylist->trackIndexes) {
-            if (trackIndex < tracks_.size() && !addTrackRow(tracks_[trackIndex])) {
-                break;
-            }
-        }
-    } else {
-        for (const Track& track : tracks_) {
-            if (!addTrackRow(track)) {
-                break;
-            }
-        }
-    }
+    constexpr float rowHorizontalPadding = 8.0f;
+    constexpr float coverGap = 14.0f;
+    constexpr float actionButtonSize = 32.0f;
+    constexpr float actionButtonGap = 6.0f;
+    constexpr float durationWidth = 42.0f;
+    constexpr float rightPadding = 12.0f;
+    const float rowContentRight = contentX + playlistTrackViewportWidth_ - rightPadding;
+    const float ellipsisX = rowContentRight - actionButtonSize;
+    const float playX = ellipsisX - actionButtonGap - actionButtonSize;
+    const float durationX = rowContentRight - durationWidth;
+    const float hoveredDurationX = playX - 12.0f - durationWidth;
+    const float titleX = contentX + rowHorizontalPadding + playlistTrackCoverSize + coverGap;
+    const float artistX = std::max(titleX + 72.0f, contentX + contentWidth * 0.62f);
+    const float titleRight = std::max(titleX, artistX - 20.0f);
+    const Color coverFill = rgb(52, 63, 68);
+    const Color buttonHoverFill = rgb(71, 82, 88);
+    const Color buttonPressedFill = rgb(63, 74, 69);
 
-    if (visibleTrackCount == 0) {
+    const auto addRowText = [&](float x, float y, float fontSize, std::string text, Color color) {
+        return primitives_.add(Primitive::text(
+            {.x = x, .y = y, .fontSize = fontSize, .text = std::move(text)},
+            {.fill = color, .stroke = color, .strokeWidth = 0.0f}));
+    };
+    const auto addRowActionButton = [&](float x, float y, const std::string& icon) {
+        return primitives_.add(Primitive::button(
+            {
+                .x = x,
+                .y = y,
+                .width = actionButtonSize,
+                .height = actionButtonSize,
+                .padding = 7.0f,
+                .radius = 0.0f,
+                .iconSize = 18.0f,
+                .iconSvg = icon,
+                .iconColor = transparent,
+                .hoverFill = buttonHoverFill,
+                .pressedFill = buttonPressedFill,
+                .disabledFill = transparent,
+                .hoverStroke = transparent,
+                .pressedStroke = transparent,
+                .enabled = false,
+            },
+            {.fill = transparent, .stroke = transparent, .strokeWidth = 0.0f}));
+    };
+
+    for (std::size_t slotIndex = 0; slotIndex < visibleTrackCapacity; ++slotIndex) {
+        const float rowY = trackY + static_cast<float>(slotIndex) * playlistTrackRowStride;
+        PlaylistTrackRowPrimitives row;
+        row.background = primitives_.add(Primitive::roundedRect(
+            {.x = contentX, .y = rowY, .width = playlistTrackViewportWidth_, .height = playlistTrackRowHeight, .radius = 0.0f},
+            {.fill = transparent, .stroke = transparent, .strokeWidth = 0.0f}));
+        row.coverTile = primitives_.add(Primitive::roundedRect(
+            {
+                .x = contentX + rowHorizontalPadding,
+                .y = rowY + 8.0f,
+                .width = playlistTrackCoverSize,
+                .height = playlistTrackCoverSize,
+                .radius = 0.0f,
+            },
+            {.fill = coverFill, .stroke = border, .strokeWidth = 1.0f}));
+        row.coverIcon = primitives_.add(Primitive::svg(
+            {
+                .x = contentX + rowHorizontalPadding + 20.0f,
+                .y = rowY + 28.0f,
+                .width = 24.0f,
+                .height = 24.0f,
+                .rasterScale = 4.0f,
+                .source = defaultCoverIcon,
+                .sourceType = SvgSourceType::Data,
+                .renderMode = SvgRenderMode::Mask,
+            },
+            {.fill = iconGrey, .stroke = transparent, .strokeWidth = 0.0f}));
+        row.fileTypeBadgeBackground = primitives_.add(Primitive::roundedRect(
+            {
+                .x = titleRight,
+                .y = rowY + playlistTrackFileTypeBadgeYInset,
+                .width = 0.0f,
+                .height = playlistTrackFileTypeBadgeHeight,
+                .radius = 0.0f,
+            },
+            {.fill = transparent, .stroke = transparent, .strokeWidth = 0.0f}));
+        row.title = addRowText(
+            titleX,
+            rowY + playlistTrackTitleYInset,
+            playlistTrackTitleFontSize,
+            "",
+            sidebarText);
+        row.fileTypeBadge = addRowText(
+            titleRight,
+            rowY + playlistTrackFileTypeBadgeYInset + playlistTrackFileTypeBadgeTextYInset,
+            playlistTrackFileTypeBadgeFontSize,
+            "",
+            accent);
+        row.album = addRowText(titleX, rowY + 45.0f, 13.0f, "", iconGrey);
+        row.artist = addRowText(artistX, rowY + 31.0f, 14.0f, "", iconGrey);
+        row.duration = addRowText(durationX, rowY + 31.0f, 13.0f, "", sidebarText);
+        row.hoveredDuration = addRowText(hoveredDurationX, rowY + 31.0f, 13.0f, "", transparent);
+        row.playButton = addRowActionButton(playX, rowY + 24.0f, playIcon);
+        row.ellipsisButton = addRowActionButton(ellipsisX, rowY + 24.0f, ellipsisIcon);
+        for (const PrimitiveId id : {
+                 row.background,
+                 row.coverTile,
+                 row.coverIcon,
+                 row.title,
+                 row.fileTypeBadgeBackground,
+                 row.fileTypeBadge,
+                 row.album,
+                 row.artist,
+                 row.duration,
+                 row.hoveredDuration,
+                 row.playButton,
+                 row.ellipsisButton,
+             }) {
+            if (Primitive* primitive = primitives_.find(id)) {
+                primitive->clip = trackViewportClip;
+            }
+        }
+        playlistTrackRows_.push_back(row);
+    }
+    playlistFirstVisibleRow_ = std::min(playlistFirstVisibleRow_, playlistTrackMaxFirstVisibleRow());
+
+    playlistScrollbarTrackX_ = contentX + contentWidth - playlistTrackScrollbarInset - playlistTrackScrollbarWidth;
+    playlistScrollbarTrackY_ = trackY + playlistTrackScrollbarInset;
+    playlistScrollbarTrackWidth_ = playlistTrackScrollbarWidth;
+    playlistScrollbarTrackHeight_ = std::max(0.0f, playlistTrackViewportHeight_ - playlistTrackScrollbarInset * 2.0f);
+    playlistScrollbarTrackId_ = primitives_.add(Primitive::roundedRect(
+        {
+            .x = playlistScrollbarTrackX_,
+            .y = playlistScrollbarTrackY_,
+            .width = playlistScrollbarTrackWidth_,
+            .height = playlistScrollbarTrackHeight_,
+            .radius = 0.0f,
+        },
+        {.fill = transparent, .stroke = transparent, .strokeWidth = 0.0f}));
+    playlistScrollbarThumbId_ = primitives_.add(Primitive::roundedRect(
+        {
+            .x = playlistScrollbarTrackX_,
+            .y = playlistScrollbarTrackY_,
+            .width = playlistScrollbarTrackWidth_,
+            .height = 0.0f,
+            .radius = 0.0f,
+        },
+        {.fill = iconGrey, .stroke = transparent, .strokeWidth = 0.0f}));
+    refreshPlaylistTrackRows();
+
+    if (displayedPlaylistTrackCount() == 0) {
         primitives_.add(Primitive::text(
             {
                 .x = contentX,
                 .y = trackY + 8.0f,
                 .fontSize = 15.0f,
-                .text = "No songs in this playlist",
+                .text = normalizedPlaylistSearchQuery_.empty()
+                    ? "No songs in this playlist"
+                    : "No songs match your search",
             },
             {
                 .fill = iconGrey,
@@ -1701,13 +1916,13 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             }));
     }
 
-    addPlaylistButton(0, "All Songs", playlistIcon, sidebarPadding);
+    addPlaylistButton(0, "All Songs", playlistIcon, sidebarPadding, sidebarButtonWidth);
     primitives_.add(Primitive::line(
         {
             .x0 = sidebarPadding,
-            .y0 = sidebarPadding + playlistButtonHeight + sidebarPadding,
+            .y0 = sidebarPadding + sidebarPlaylistButtonHeight + sidebarPadding,
             .x1 = sidebarWidth - sidebarPadding,
-            .y1 = sidebarPadding + playlistButtonHeight + sidebarPadding,
+            .y1 = sidebarPadding + sidebarPlaylistButtonHeight + sidebarPadding,
             .thickness = 1.0f,
         },
         {
@@ -1715,21 +1930,120 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .stroke = separator,
             .strokeWidth = 0.0f,
         }));
-
-    float playlistY = sidebarPadding + playlistButtonHeight + sidebarPadding + playlistButtonGap;
-    for (const Playlist& playlist : playlists_) {
-        addPlaylistButton(playlist.id, playlist.name, playlistIcon, playlistY);
-        playlistY += playlistButtonHeight + playlistButtonGap;
-    }
 
     const float helpY = windowHeight - sidebarPadding - sidebarButtonHeight;
     const float addSongsY = helpY - sidebarButtonGap - sidebarButtonHeight;
+    const float createPlaylistY = addSongsY - sidebarButtonGap - sidebarButtonHeight;
+    const float bottomActionsSeparatorY = createPlaylistY - sidebarPadding;
+    const float playlistY = sidebarPadding + sidebarPlaylistButtonHeight + sidebarPadding + sidebarPlaylistButtonGap;
+    sidebarPlaylistViewportX_ = sidebarPadding;
+    sidebarPlaylistViewportY_ = playlistY;
+    sidebarPlaylistViewportWidth_ = sidebarButtonWidth;
+    sidebarPlaylistViewportHeight_ = std::max(0.0f, bottomActionsSeparatorY - playlistY);
+    sidebarPlaylistFirstVisibleRow_ = std::min(
+        sidebarPlaylistFirstVisibleRow_,
+        sidebarPlaylistMaxFirstVisibleRow());
+
+    const std::size_t maxFirstVisiblePlaylist = sidebarPlaylistMaxFirstVisibleRow();
+    const bool sidebarPlaylistScrollbarVisible = maxFirstVisiblePlaylist > 0
+        && sidebarPlaylistViewportHeight_ > 0.0f;
+    const float playlistButtonWidth = sidebarPlaylistScrollbarVisible
+        ? std::max(0.0f, sidebarButtonWidth - sidebarPlaylistScrollbarHitWidth)
+        : sidebarButtonWidth;
+    const float playlistContentHeight = playlists_.empty()
+        ? 0.0f
+        : static_cast<float>(playlists_.size()) * sidebarPlaylistRowStride
+            - sidebarPlaylistButtonGap
+            + sidebarPlaylistEndPadding;
+    const float maxPlaylistScrollOffset = std::max(
+        0.0f,
+        playlistContentHeight - sidebarPlaylistViewportHeight_);
+    const bool atPlaylistScrollEnd = sidebarPlaylistFirstVisibleRow_ == maxFirstVisiblePlaylist
+        && maxFirstVisiblePlaylist > 0;
+    const float playlistScrollOffset = atPlaylistScrollEnd
+        ? maxPlaylistScrollOffset
+        : std::min(
+            static_cast<float>(sidebarPlaylistFirstVisibleRow_) * sidebarPlaylistRowStride,
+            maxPlaylistScrollOffset);
+    const std::size_t firstRenderedPlaylist = std::min(
+        playlists_.size(),
+        static_cast<std::size_t>(playlistScrollOffset / sidebarPlaylistRowStride));
+    const float firstPlaylistY = playlistY - std::fmod(playlistScrollOffset, sidebarPlaylistRowStride);
+    for (std::size_t playlistIndex = firstRenderedPlaylist; playlistIndex < playlists_.size(); ++playlistIndex) {
+        const float rowY = firstPlaylistY
+            + static_cast<float>(playlistIndex - firstRenderedPlaylist) * sidebarPlaylistRowStride;
+        if (rowY >= playlistY + sidebarPlaylistViewportHeight_) {
+            break;
+        }
+
+        const Playlist& playlist = playlists_[playlistIndex];
+        const PrimitiveId playlistButtonId = addPlaylistButton(
+            playlist.id,
+            playlist.name,
+            playlistIcon,
+            rowY,
+            playlistButtonWidth);
+        if (Primitive* primitive = primitives_.find(playlistButtonId)) {
+            primitive->clip = PrimitiveClipRect{
+                .x = sidebarPlaylistViewportX_,
+                .y = sidebarPlaylistViewportY_,
+                .width = sidebarPlaylistViewportWidth_,
+                .height = sidebarPlaylistViewportHeight_,
+            };
+        }
+    }
+
+    sidebarPlaylistScrollbarTrackX_ = sidebarWidth - sidebarPadding - sidebarPlaylistScrollbarWidth;
+    sidebarPlaylistScrollbarTrackY_ = playlistY;
+    sidebarPlaylistScrollbarTrackWidth_ = sidebarPlaylistScrollbarWidth;
+    sidebarPlaylistScrollbarTrackHeight_ = std::max(
+        0.0f,
+        sidebarPlaylistViewportHeight_ - sidebarPlaylistScrollbarBottomInset);
+    sidebarPlaylistScrollbarThumbY_ = playlistY;
+    sidebarPlaylistScrollbarThumbHeight_ = 0.0f;
+    if (sidebarPlaylistScrollbarVisible) {
+        const float visibleRatio = playlistContentHeight <= 0.0f
+            ? 1.0f
+            : sidebarPlaylistViewportHeight_ / playlistContentHeight;
+        sidebarPlaylistScrollbarThumbHeight_ = std::min(
+            sidebarPlaylistScrollbarTrackHeight_,
+            std::max(
+                sidebarPlaylistScrollbarMinThumbHeight,
+                sidebarPlaylistScrollbarTrackHeight_ * visibleRatio));
+        const float thumbTravel = std::max(
+            0.0f,
+            sidebarPlaylistScrollbarTrackHeight_ - sidebarPlaylistScrollbarThumbHeight_);
+        sidebarPlaylistScrollbarThumbY_ = sidebarPlaylistScrollbarTrackY_
+            + thumbTravel
+                * playlistScrollOffset
+                / maxPlaylistScrollOffset;
+
+        primitives_.add(Primitive::roundedRect(
+            {
+                .x = sidebarPlaylistScrollbarTrackX_,
+                .y = sidebarPlaylistScrollbarTrackY_,
+                .width = sidebarPlaylistScrollbarTrackWidth_,
+                .height = sidebarPlaylistScrollbarTrackHeight_,
+                .radius = 0.0f,
+            },
+            {.fill = mantle, .stroke = transparent, .strokeWidth = 0.0f}));
+        primitives_.add(Primitive::roundedRect(
+            {
+                .x = sidebarPlaylistScrollbarTrackX_,
+                .y = sidebarPlaylistScrollbarThumbY_,
+                .width = sidebarPlaylistScrollbarTrackWidth_,
+                .height = sidebarPlaylistScrollbarThumbHeight_,
+                .radius = 0.0f,
+            },
+            {.fill = iconGrey, .stroke = transparent, .strokeWidth = 0.0f}));
+    }
+
     primitives_.add(Primitive::line(
         {
             .x0 = sidebarPadding,
-            .y0 = addSongsY - sidebarPadding,
+            .y0 = bottomActionsSeparatorY,
             .x1 = sidebarWidth - sidebarPadding,
-            .y1 = addSongsY - sidebarPadding,
+            .y1 = bottomActionsSeparatorY,
             .thickness = 1.0f,
         },
         {
@@ -1737,6 +2051,9 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .stroke = separator,
             .strokeWidth = 0.0f,
         }));
+    addSidebarButton("Create Playlist", addPlaylistIcon, createPlaylistY, [this]() {
+        createPlaylist();
+    });
     addSidebarButton("Import Songs", addSongsIcon, addSongsY, [this]() {
         toggleAddSongsMenu();
     });
@@ -2082,7 +2399,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                         .caretColor = sidebarText,
                         .caretCodepointIndex = addSongsSearchQuery_.size(),
                         .focused = addSongsSearchFocused_,
-                        .caretVisible = addSongsCaretVisible_,
+                        .caretVisible = searchCaretVisible_,
                     },
                     {
                         .fill = listBackground,
@@ -2387,7 +2704,7 @@ void App::run()
     bool needsDraw = true;
     while (window_.pollEvents(eventPollTimeoutMilliseconds(needsDraw))) {
         completePendingAudioScanIfReady();
-        updateAddSongsCaretBlink();
+        updateSearchCaretBlink();
 
         if (window_.takeResizeFlag()) {
             renderer_.recreateSwapchain();
@@ -2418,6 +2735,7 @@ App::PlaylistId App::addPlaylist(std::string name)
     playlists_.push_back({
         .id = id,
         .name = std::move(name),
+        .createdAt = std::chrono::system_clock::now(),
     });
     if (sceneReady_) {
         rebuildScene();
@@ -2440,6 +2758,10 @@ bool App::removePlaylist(PlaylistId id)
 
     if (selectedPlaylistId_ == id) {
         selectedPlaylistId_ = 0;
+        playlistSearchQuery_.clear();
+        normalizedPlaylistSearchQuery_.clear();
+        filteredPlaylistTrackIndexes_.clear();
+        playlistFirstVisibleRow_ = 0;
     }
     std::erase(selectedAddSongsPlaylistIds_, id);
 
@@ -2463,6 +2785,7 @@ std::vector<Primitive> App::renderPrimitives(VulkanRenderer::PrimitiveUpdate upd
             .id = primitive.id,
             .style = primitive.style,
             .visible = primitive.visible,
+            .clip = primitive.clip,
         };
 
         if (const auto* roundedRect = std::get_if<RoundedRectPrimitive>(&primitive.geometry)) {
@@ -2559,7 +2882,398 @@ void App::selectPlaylist(PlaylistId id)
     }
 
     selectedPlaylistId_ = id;
+    playlistSearchQuery_.clear();
+    normalizedPlaylistSearchQuery_.clear();
+    filteredPlaylistTrackIndexes_.clear();
+    playlistFirstVisibleRow_ = 0;
+    clearPlaylistTrackRowHover();
     rebuildScene();
+}
+
+void App::createPlaylist()
+{
+    constexpr std::string_view baseName = "New Playlist";
+    std::string name(baseName);
+    std::size_t suffix = 2;
+    const auto nameExists = [this](std::string_view candidate) {
+        return std::ranges::any_of(playlists_, [candidate](const Playlist& playlist) {
+            return playlist.name == candidate;
+        });
+    };
+    while (nameExists(name)) {
+        name = std::string(baseName) + " " + std::to_string(suffix++);
+    }
+
+    selectedPlaylistId_ = nextPlaylistId_++;
+    playlists_.push_back({
+        .id = selectedPlaylistId_,
+        .name = std::move(name),
+        .createdAt = std::chrono::system_clock::now(),
+    });
+    sidebarPlaylistFirstVisibleRow_ = playlists_.size() - 1;
+    playlistSearchQuery_.clear();
+    normalizedPlaylistSearchQuery_.clear();
+    filteredPlaylistTrackIndexes_.clear();
+    playlistFirstVisibleRow_ = 0;
+    rebuildScene();
+}
+
+void App::setPlaylistSearchQuery(std::string query)
+{
+    if (playlistSearchQuery_ == query) {
+        return;
+    }
+
+    playlistSearchQuery_ = std::move(query);
+    normalizedPlaylistSearchQuery_ = lowercaseAscii(playlistSearchQuery_);
+    rebuildPlaylistTrackFilter();
+}
+
+void App::rebuildPlaylistTrackFilter()
+{
+    filteredPlaylistTrackIndexes_.clear();
+    playlistFirstVisibleRow_ = 0;
+    clearPlaylistTrackRowHover();
+
+    if (normalizedPlaylistSearchQuery_.empty()) {
+        return;
+    }
+
+    const auto addIfMatching = [this](std::size_t trackIndex) {
+        if (trackIndex < tracks_.size()
+            && lowercaseAscii(tracks_[trackIndex].title).find(normalizedPlaylistSearchQuery_) != std::string::npos) {
+            filteredPlaylistTrackIndexes_.push_back(trackIndex);
+        }
+    };
+
+    if (selectedPlaylistId_ == 0) {
+        for (std::size_t trackIndex = 0; trackIndex < tracks_.size(); ++trackIndex) {
+            addIfMatching(trackIndex);
+        }
+        return;
+    }
+
+    const auto playlist = std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id);
+    if (playlist == playlists_.end()) {
+        return;
+    }
+    for (const std::size_t trackIndex : playlist->trackIndexes) {
+        addIfMatching(trackIndex);
+    }
+}
+
+const App::Track* App::displayedPlaylistTrack(std::size_t displayedIndex) const
+{
+    if (!normalizedPlaylistSearchQuery_.empty()) {
+        if (displayedIndex >= filteredPlaylistTrackIndexes_.size()) {
+            return nullptr;
+        }
+        const std::size_t trackIndex = filteredPlaylistTrackIndexes_[displayedIndex];
+        return trackIndex < tracks_.size() ? &tracks_[trackIndex] : nullptr;
+    }
+
+    if (selectedPlaylistId_ == 0) {
+        return displayedIndex < tracks_.size() ? &tracks_[displayedIndex] : nullptr;
+    }
+
+    const auto playlist = std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id);
+    if (playlist == playlists_.end() || displayedIndex >= playlist->trackIndexes.size()) {
+        return nullptr;
+    }
+
+    const std::size_t trackIndex = playlist->trackIndexes[displayedIndex];
+    return trackIndex < tracks_.size() ? &tracks_[trackIndex] : nullptr;
+}
+
+std::size_t App::displayedPlaylistTrackCount() const
+{
+    if (!normalizedPlaylistSearchQuery_.empty()) {
+        return filteredPlaylistTrackIndexes_.size();
+    }
+
+    if (selectedPlaylistId_ == 0) {
+        return tracks_.size();
+    }
+
+    const auto playlist = std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id);
+    return playlist == playlists_.end() ? 0 : playlist->trackIndexes.size();
+}
+
+std::string App::playlistTrackFileTypeBadge(const Track& track) const
+{
+    std::string extension = track.path.extension().string();
+    if (!extension.empty() && extension.front() == '.') {
+        extension.erase(extension.begin());
+    }
+    if (extension.empty()) {
+        return "AUDIO";
+    }
+
+    std::ranges::transform(extension, extension.begin(), [](unsigned char character) {
+        return character >= 'a' && character <= 'z'
+            ? static_cast<char>(character - 'a' + 'A')
+            : static_cast<char>(character);
+    });
+    return truncateText(std::move(extension), 6);
+}
+
+std::size_t App::playlistTrackMaxFirstVisibleRow() const
+{
+    if (playlistTrackRows_.empty()) {
+        return 0;
+    }
+
+    const std::size_t fullyVisibleCapacity = playlistTrackViewportHeight_ >= playlistTrackRowHeight
+        ? 1 + static_cast<std::size_t>(
+            std::floor((playlistTrackViewportHeight_ - playlistTrackRowHeight) / playlistTrackRowStride))
+        : 1;
+    const std::size_t trackCount = displayedPlaylistTrackCount();
+    return trackCount > fullyVisibleCapacity ? trackCount - fullyVisibleCapacity : 0;
+}
+
+void App::setPlaylistFirstVisibleRow(std::size_t firstVisibleRow)
+{
+    const std::size_t clamped = std::min(firstVisibleRow, playlistTrackMaxFirstVisibleRow());
+    if (playlistFirstVisibleRow_ == clamped) {
+        return;
+    }
+
+    playlistFirstVisibleRow_ = clamped;
+    clearPlaylistTrackRowHover();
+    refreshPlaylistTrackRows();
+}
+
+void App::refreshPlaylistTrackRows()
+{
+    const Color transparent{0.0f, 0.0f, 0.0f, 0.0f};
+    const Color sidebarText = rgb(211, 198, 170);
+    const Color iconGrey = rgb(133, 146, 137);
+    const Color accent = rgb(167, 192, 128);
+    const Color border = rgb(71, 82, 88);
+    const Color coverFill = rgb(52, 63, 68);
+
+    const auto setStyleColor = [&](PrimitiveId id, Color fill, Color stroke = Color{0.0f, 0.0f, 0.0f, 0.0f}, float strokeWidth = 0.0f) {
+        if (Primitive* primitive = primitives_.find(id)) {
+            primitive->style = {.fill = fill, .stroke = stroke, .strokeWidth = strokeWidth};
+        }
+    };
+    const auto setText = [&](PrimitiveId id, std::string text, Color color) {
+        if (Primitive* primitive = primitives_.find(id)) {
+            if (auto* geometry = std::get_if<TextPrimitive>(&primitive->geometry)) {
+                geometry->text = std::move(text);
+            }
+            primitive->style = {.fill = color, .stroke = color, .strokeWidth = 0.0f};
+        }
+    };
+
+    for (std::size_t slotIndex = 0; slotIndex < playlistTrackRows_.size(); ++slotIndex) {
+        PlaylistTrackRowPrimitives& row = playlistTrackRows_[slotIndex];
+        const Track* track = displayedPlaylistTrack(playlistFirstVisibleRow_ + slotIndex);
+        row.active = track != nullptr;
+
+        if (!row.active) {
+            setStyleColor(row.background, transparent);
+            setStyleColor(row.coverTile, transparent);
+            setStyleColor(row.coverIcon, transparent);
+            setText(row.title, "", transparent);
+            setStyleColor(row.fileTypeBadgeBackground, transparent);
+            setText(row.fileTypeBadge, "", transparent);
+            setText(row.album, "", transparent);
+            setText(row.artist, "", transparent);
+            setText(row.duration, "", transparent);
+            setText(row.hoveredDuration, "", transparent);
+        } else {
+            Primitive* titlePrimitive = primitives_.find(row.title);
+            Primitive* badgePrimitive = primitives_.find(row.fileTypeBadge);
+            const auto* titleGeometry = titlePrimitive == nullptr ? nullptr : std::get_if<TextPrimitive>(&titlePrimitive->geometry);
+            auto* badgeGeometry = badgePrimitive == nullptr ? nullptr : std::get_if<TextPrimitive>(&badgePrimitive->geometry);
+            const auto* albumGeometry = [&]() -> const TextPrimitive* {
+                const Primitive* primitive = primitives_.find(row.album);
+                return primitive == nullptr ? nullptr : std::get_if<TextPrimitive>(&primitive->geometry);
+            }();
+            const auto* artistGeometry = [&]() -> const TextPrimitive* {
+                const Primitive* primitive = primitives_.find(row.artist);
+                return primitive == nullptr ? nullptr : std::get_if<TextPrimitive>(&primitive->geometry);
+            }();
+            const float titleRight = artistGeometry == nullptr ? 0.0f : artistGeometry->x - 20.0f;
+            const std::string badge = playlistTrackFileTypeBadge(*track);
+            const float badgeTextWidth = static_cast<float>(badge.size()) * playlistTrackFileTypeBadgeCharacterWidth;
+            const float badgeWidth = badgeTextWidth
+                + playlistTrackFileTypeBadgeHorizontalPadding * 2.0f;
+            const float titleWidth = titleGeometry == nullptr
+                ? 0.0f
+                : std::max(0.0f, titleRight - titleGeometry->x - badgeWidth - playlistTrackFileTypeBadgeGap);
+            const float albumWidth = titleGeometry == nullptr || albumGeometry == nullptr
+                ? 0.0f
+                : std::max(0.0f, titleRight - albumGeometry->x);
+            const float artistRight = [&]() {
+                const Primitive* primitive = primitives_.find(row.hoveredDuration);
+                const auto* geometry = primitive == nullptr ? nullptr : std::get_if<TextPrimitive>(&primitive->geometry);
+                return geometry == nullptr ? 0.0f : geometry->x - 18.0f;
+            }();
+            const float artistWidth = artistGeometry == nullptr ? 0.0f : std::max(0.0f, artistRight - artistGeometry->x);
+            const std::string title = fitTextToWidth(
+                track->title,
+                titleWidth,
+                playlistTrackTitleCharacterWidth);
+            const bool badgeVisible = titleWidth > 0.0f;
+
+            setStyleColor(row.background, transparent);
+            setStyleColor(row.coverTile, coverFill, border, 1.0f);
+            setStyleColor(row.coverIcon, iconGrey);
+            setText(row.title, title, sidebarText);
+            setStyleColor(
+                row.fileTypeBadgeBackground,
+                badgeVisible ? rgb(71, 82, 88, 0.45f) : transparent,
+                badgeVisible ? border : transparent,
+                badgeVisible ? 1.0f : 0.0f);
+            setText(row.fileTypeBadge, badgeVisible ? badge : std::string{}, accent);
+            setText(row.album, fitTextToWidth("Unknown Album", albumWidth, 7.0f), iconGrey);
+            setText(row.artist, fitTextToWidth("Unknown Artist", artistWidth, 7.4f), iconGrey);
+            setText(row.duration, "3:00", sidebarText);
+            setText(row.hoveredDuration, "3:00", transparent);
+            if (titleGeometry != nullptr && badgeGeometry != nullptr) {
+                const float titleVisualWidth = renderer_.measureTextVisualWidth(
+                    title,
+                    titleGeometry->fontFamilies,
+                    titleGeometry->fontSize);
+                const float badgeX = std::min(
+                    titleRight - badgeWidth,
+                    titleGeometry->x + titleVisualWidth + playlistTrackFileTypeBadgeGap);
+                badgeGeometry->x = badgeX + (badgeWidth - badgeTextWidth) * 0.5f;
+                if (Primitive* primitive = primitives_.find(row.fileTypeBadgeBackground)) {
+                    if (auto* background = std::get_if<RoundedRectPrimitive>(&primitive->geometry)) {
+                        background->x = badgeX;
+                        background->width = badgeVisible ? badgeWidth : 0.0f;
+                    }
+                }
+            }
+        }
+
+        for (const PrimitiveId buttonId : {row.playButton, row.ellipsisButton}) {
+            if (Primitive* primitive = primitives_.find(buttonId)) {
+                if (auto* button = std::get_if<ButtonPrimitive>(&primitive->geometry)) {
+                    button->enabled = false;
+                    button->hovered = false;
+                    button->pressed = false;
+                    button->iconColor = transparent;
+                }
+                primitive->style.fill = transparent;
+                primitive->style.stroke = transparent;
+            }
+        }
+    }
+
+    const std::size_t trackCount = displayedPlaylistTrackCount();
+    const float totalTrackHeight = trackCount == 0
+        ? 0.0f
+        : static_cast<float>(trackCount) * playlistTrackRowStride - playlistTrackRowGap;
+    const bool scrollbarVisible = playlistTrackMaxFirstVisibleRow() > 0
+        && playlistScrollbarTrackHeight_ > 0.0f;
+    playlistScrollbarThumbHeight_ = scrollbarVisible
+        ? std::min(
+            playlistScrollbarTrackHeight_,
+            std::max(28.0f, playlistScrollbarTrackHeight_ * playlistTrackViewportHeight_ / totalTrackHeight))
+        : 0.0f;
+    const float thumbTravel = std::max(0.0f, playlistScrollbarTrackHeight_ - playlistScrollbarThumbHeight_);
+    const std::size_t maxFirstVisibleRow = playlistTrackMaxFirstVisibleRow();
+    const float scrollRatio = maxFirstVisibleRow == 0
+        ? 0.0f
+        : static_cast<float>(playlistFirstVisibleRow_) / static_cast<float>(maxFirstVisibleRow);
+    playlistScrollbarThumbY_ = playlistScrollbarTrackY_ + thumbTravel * scrollRatio;
+    if (Primitive* primitive = primitives_.find(playlistScrollbarTrackId_)) {
+        primitive->style.fill = scrollbarVisible ? rgb(71, 82, 88, 0.55f) : transparent;
+    }
+    if (Primitive* primitive = primitives_.find(playlistScrollbarThumbId_)) {
+        if (auto* thumb = std::get_if<RoundedRectPrimitive>(&primitive->geometry)) {
+            thumb->y = playlistScrollbarThumbY_;
+            thumb->height = playlistScrollbarThumbHeight_;
+        }
+        primitive->style.fill = scrollbarVisible ? iconGrey : transparent;
+    }
+
+    refreshPrimitives(VulkanRenderer::PrimitiveUpdate::Text);
+}
+
+void App::refreshPlaylistTrackRowHover(std::size_t hoveredSlot)
+{
+    const Color transparent{0.0f, 0.0f, 0.0f, 0.0f};
+    const Color sidebarText = rgb(211, 198, 170);
+    const Color rowHoverFill = rgb(52, 63, 68, 0.72f);
+    const Color buttonIcon = rgb(211, 198, 170);
+    hoveredPlaylistTrackSlot_ = hoveredSlot;
+
+    for (std::size_t slotIndex = 0; slotIndex < playlistTrackRows_.size(); ++slotIndex) {
+        PlaylistTrackRowPrimitives& row = playlistTrackRows_[slotIndex];
+        const bool hovered = row.active && slotIndex == hoveredSlot;
+        if (Primitive* primitive = primitives_.find(row.background)) {
+            primitive->style.fill = hovered ? rowHoverFill : transparent;
+        }
+        if (Primitive* primitive = primitives_.find(row.duration)) {
+            primitive->style.fill = hovered ? transparent : sidebarText;
+            primitive->style.stroke = primitive->style.fill;
+        }
+        if (Primitive* primitive = primitives_.find(row.hoveredDuration)) {
+            primitive->style.fill = hovered ? sidebarText : transparent;
+            primitive->style.stroke = primitive->style.fill;
+        }
+        for (const PrimitiveId buttonId : {row.playButton, row.ellipsisButton}) {
+            if (Primitive* primitive = primitives_.find(buttonId)) {
+                if (auto* button = std::get_if<ButtonPrimitive>(&primitive->geometry)) {
+                    button->enabled = hovered;
+                    button->iconColor = hovered ? buttonIcon : transparent;
+                    if (!hovered) {
+                        button->hovered = false;
+                        button->pressed = false;
+                    }
+                }
+            }
+        }
+    }
+    refreshPrimitives(VulkanRenderer::PrimitiveUpdate::DrawOnly);
+}
+
+void App::clearPlaylistTrackRowHover()
+{
+    if (hoveredPlaylistTrackSlot_ != static_cast<std::size_t>(-1)) {
+        refreshPlaylistTrackRowHover(static_cast<std::size_t>(-1));
+    }
+}
+
+bool App::playlistTrackViewportContains(float x, float y) const
+{
+    return x >= playlistTrackViewportX_ && x <= playlistTrackViewportX_ + playlistTrackViewportWidth_
+        && y >= playlistTrackViewportY_ && y <= playlistTrackViewportY_ + playlistTrackViewportHeight_;
+}
+
+std::size_t App::sidebarPlaylistMaxFirstVisibleRow() const
+{
+    const float contentHeight = playlists_.empty()
+        ? 0.0f
+        : static_cast<float>(playlists_.size()) * sidebarPlaylistRowStride
+            - sidebarPlaylistButtonGap
+            + sidebarPlaylistEndPadding;
+    const float maxScrollOffset = std::max(0.0f, contentHeight - sidebarPlaylistViewportHeight_);
+    return static_cast<std::size_t>(std::ceil(maxScrollOffset / sidebarPlaylistRowStride));
+}
+
+void App::setSidebarPlaylistFirstVisibleRow(std::size_t firstVisibleRow)
+{
+    const std::size_t clamped = std::min(firstVisibleRow, sidebarPlaylistMaxFirstVisibleRow());
+    if (sidebarPlaylistFirstVisibleRow_ == clamped) {
+        return;
+    }
+
+    sidebarPlaylistFirstVisibleRow_ = clamped;
+    rebuildScene();
+}
+
+bool App::sidebarPlaylistViewportContains(float x, float y) const
+{
+    return x >= sidebarPlaylistViewportX_
+        && x <= sidebarPlaylistViewportX_ + sidebarPlaylistViewportWidth_
+        && y >= sidebarPlaylistViewportY_
+        && y <= sidebarPlaylistViewportY_ + sidebarPlaylistViewportHeight_;
 }
 
 bool App::addTrackToPlaylist(PlaylistId playlistId, std::size_t trackIndex)
@@ -2588,8 +3302,8 @@ void App::resetAddSongsMenuState(bool clearPendingSongs)
     addSongsDirectoryOptionsVisible_ = false;
     addSongsPlaylistDropdownOpen_ = false;
     addSongsSearchFocused_ = false;
-    addSongsCaretVisible_ = true;
-    nextAddSongsCaretBlink_ = std::chrono::steady_clock::now() + addSongsCaretBlinkInterval;
+    searchCaretVisible_ = true;
+    nextSearchCaretBlink_ = std::chrono::steady_clock::now() + searchCaretBlinkInterval;
     draggingPendingSongsScrollbar_ = false;
     pendingSongsScrollbarDragOffsetY_ = 0.0f;
     pendingAddSongsScrollOffset_ = 0.0f;
@@ -2664,35 +3378,43 @@ std::size_t App::pendingSongMatchCount() const
         : filteredPendingSongIndexes_.size();
 }
 
-void App::resetAddSongsCaretBlink()
+void App::resetSearchCaretBlink()
 {
-    addSongsCaretVisible_ = true;
-    nextAddSongsCaretBlink_ = std::chrono::steady_clock::now() + addSongsCaretBlinkInterval;
+    searchCaretVisible_ = true;
+    nextSearchCaretBlink_ = std::chrono::steady_clock::now() + searchCaretBlinkInterval;
 
-    if (Primitive* primitive = primitives_.find(addSongsSearchFieldId_)) {
-        if (auto* textField = std::get_if<TextFieldPrimitive>(&primitive->geometry); textField != nullptr && !textField->caretVisible) {
-            textField->caretVisible = true;
-            refreshPrimitives();
+    for (const PrimitiveId searchFieldId : {addSongsSearchFieldId_, playlistSearchFieldId_}) {
+        if (Primitive* primitive = primitives_.find(searchFieldId)) {
+            if (auto* textField = std::get_if<TextFieldPrimitive>(&primitive->geometry); textField != nullptr && !textField->caretVisible) {
+                textField->caretVisible = true;
+                refreshPrimitives();
+            }
         }
     }
 }
 
-void App::updateAddSongsCaretBlink()
+void App::updateSearchCaretBlink()
 {
-    if (!addSongsMenuOpen_ || !addSongsSearchFocused_ || addSongsAudioScanActive_) {
+    PrimitiveId activeSearchFieldId = 0;
+    if (addSongsMenuOpen_ && addSongsSearchFocused_ && !addSongsAudioScanActive_) {
+        activeSearchFieldId = addSongsSearchFieldId_;
+    } else if (!addSongsMenuOpen_ && playlistSearchFocused_) {
+        activeSearchFieldId = playlistSearchFieldId_;
+    }
+    if (activeSearchFieldId == 0) {
         return;
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (now < nextAddSongsCaretBlink_) {
+    if (now < nextSearchCaretBlink_) {
         return;
     }
 
-    addSongsCaretVisible_ = !addSongsCaretVisible_;
-    nextAddSongsCaretBlink_ = now + addSongsCaretBlinkInterval;
-    if (Primitive* primitive = primitives_.find(addSongsSearchFieldId_)) {
+    searchCaretVisible_ = !searchCaretVisible_;
+    nextSearchCaretBlink_ = now + searchCaretBlinkInterval;
+    if (Primitive* primitive = primitives_.find(activeSearchFieldId)) {
         if (auto* textField = std::get_if<TextFieldPrimitive>(&primitive->geometry)) {
-            textField->caretVisible = addSongsCaretVisible_;
+            textField->caretVisible = searchCaretVisible_;
             refreshPrimitives();
         }
     }
@@ -2706,12 +3428,14 @@ std::int32_t App::eventPollTimeoutMilliseconds(bool needsDraw) const
     if (needsDraw) {
         return 0;
     }
-    if (!addSongsMenuOpen_ || !addSongsSearchFocused_) {
+    const bool searchFieldFocused = (addSongsMenuOpen_ && addSongsSearchFocused_)
+        || (!addSongsMenuOpen_ && playlistSearchFocused_);
+    if (!searchFieldFocused) {
         return -1;
     }
 
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-        nextAddSongsCaretBlink_ - std::chrono::steady_clock::now());
+        nextSearchCaretBlink_ - std::chrono::steady_clock::now());
     return remaining.count() <= 0
         ? 0
         : static_cast<std::int32_t>(remaining.count() + 1);
@@ -2780,6 +3504,7 @@ void App::toggleAddSongsMenu()
     if (!addSongsMenuOpen_) {
         resetAddSongsMenuState(true);
     } else {
+        playlistSearchFocused_ = false;
         resetAddSongsMenuState(false);
     }
     rebuildScene();
@@ -2881,6 +3606,9 @@ void App::importPendingSongs(std::vector<PendingAudioFile> songs, std::vector<Pl
     if (currentSongDurationSeconds_ <= 0.0f) {
         currentSongDurationSeconds_ = 180.0f;
     }
+    if (!normalizedPlaylistSearchQuery_.empty()) {
+        rebuildPlaylistTrackFilter();
+    }
     rebuildScene();
 }
 
@@ -2951,6 +3679,9 @@ void App::importFiles(const std::vector<std::filesystem::path>& paths)
     if (currentSongDurationSeconds_ <= 0.0f) {
         currentSongDurationSeconds_ = 180.0f;
     }
+    if (!normalizedPlaylistSearchQuery_.empty()) {
+        rebuildPlaylistTrackFilter();
+    }
     rebuildScene();
 }
 
@@ -2967,6 +3698,7 @@ void App::startPendingAudioScan(std::vector<std::filesystem::path> paths)
     });
 
     addSongsMenuOpen_ = true;
+    playlistSearchFocused_ = false;
     addSongsAudioScanActive_ = true;
     resetAddSongsMenuState(false);
     pendingAudioScanProgress_ = scanProgress;
@@ -3133,6 +3865,19 @@ bool App::addSongsSearchFieldContains(float x, float y) const
     return contains(searchField, x, y);
 }
 
+bool App::playlistSearchFieldContains(float x, float y) const
+{
+    if (addSongsMenuOpen_) {
+        return false;
+    }
+
+    const Primitive* primitive = primitives_.find(playlistSearchFieldId_);
+    const auto* searchField = primitive == nullptr
+        ? nullptr
+        : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+    return searchField != nullptr && contains(*searchField, x, y);
+}
+
 void App::togglePlayback()
 {
     if (!hasCurrentSong_) {
@@ -3295,10 +4040,16 @@ void App::refreshMediaProgressControl()
 void App::rebuildScene()
 {
     primitives_.clear();
+    playlistTrackRows_.clear();
+    draggingPlaylistScrollbar_ = false;
+    playlistScrollbarTrackId_ = 0;
+    playlistScrollbarThumbId_ = 0;
+    hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
     audioScanStatusTextId_ = 0;
     audioScanPathTextId_ = 0;
     audioScanProgressFillId_ = 0;
     addSongsSearchFieldId_ = 0;
+    playlistSearchFieldId_ = 0;
     buildInitialScene(static_cast<float>(window_.width()), static_cast<float>(window_.height()));
     pressedButton_ = 0;
     sceneReady_ = true;
@@ -3417,9 +4168,191 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         const bool searchFocused = addSongsSearchFieldContains(event.x, event.y);
         if (addSongsSearchFocused_ != searchFocused) {
             addSongsSearchFocused_ = searchFocused;
-            resetAddSongsCaretBlink();
+            resetSearchCaretBlink();
             rebuildScene();
         }
+    }
+
+    const float sidebarPlaylistScrollbarHitX = sidebarPlaylistScrollbarTrackX_
+        - (sidebarPlaylistScrollbarHitWidth - sidebarPlaylistScrollbarTrackWidth_) * 0.5f;
+    const Rect sidebarPlaylistScrollbarHitTarget{
+        .x = sidebarPlaylistScrollbarHitX,
+        .y = sidebarPlaylistScrollbarTrackY_,
+        .width = sidebarPlaylistScrollbarHitWidth,
+        .height = sidebarPlaylistScrollbarTrackHeight_,
+    };
+    const Rect sidebarPlaylistScrollbarThumb{
+        .x = sidebarPlaylistScrollbarHitX,
+        .y = sidebarPlaylistScrollbarThumbY_,
+        .width = sidebarPlaylistScrollbarHitWidth,
+        .height = sidebarPlaylistScrollbarThumbHeight_,
+    };
+    const bool sidebarPlaylistScrollbarVisible = sidebarPlaylistScrollbarThumbHeight_ > 0.0f;
+    const auto setSidebarPlaylistScrollFromPointer = [&](float pointerY) {
+        const float thumbTravel = std::max(
+            0.0f,
+            sidebarPlaylistScrollbarTrackHeight_ - sidebarPlaylistScrollbarThumbHeight_);
+        const std::size_t maxFirstVisibleRow = sidebarPlaylistMaxFirstVisibleRow();
+        if (!sidebarPlaylistScrollbarVisible || thumbTravel <= 0.0f || maxFirstVisibleRow == 0) {
+            return;
+        }
+
+        const float thumbY = std::clamp(
+            pointerY - sidebarPlaylistScrollbarDragOffsetY_,
+            sidebarPlaylistScrollbarTrackY_,
+            sidebarPlaylistScrollbarTrackY_ + thumbTravel);
+        const float scrollRatio = (thumbY - sidebarPlaylistScrollbarTrackY_) / thumbTravel;
+        setSidebarPlaylistFirstVisibleRow(static_cast<std::size_t>(std::round(
+            scrollRatio * static_cast<float>(maxFirstVisibleRow))));
+    };
+
+    if (draggingSidebarPlaylistScrollbar_) {
+        if (event.type == WaylandWindow::PointerEventType::Move) {
+            setSidebarPlaylistScrollFromPointer(event.y);
+            window_.setCursor(WaylandWindow::CursorShape::Pointer);
+            return;
+        }
+        if (event.type == WaylandWindow::PointerEventType::ButtonRelease) {
+            setSidebarPlaylistScrollFromPointer(event.y);
+            draggingSidebarPlaylistScrollbar_ = false;
+            window_.setCursor(WaylandWindow::CursorShape::Pointer);
+            return;
+        }
+        if (event.type == WaylandWindow::PointerEventType::Leave) {
+            draggingSidebarPlaylistScrollbar_ = false;
+        }
+    }
+
+    const bool hoveringSidebarPlaylistScrollbar = !addSongsMenuOpen_
+        && sidebarPlaylistScrollbarVisible
+        && event.type != WaylandWindow::PointerEventType::Leave
+        && contains(sidebarPlaylistScrollbarHitTarget, event.x, event.y);
+    if (event.type == WaylandWindow::PointerEventType::ButtonPress && hoveringSidebarPlaylistScrollbar) {
+        draggingSidebarPlaylistScrollbar_ = true;
+        sidebarPlaylistScrollbarDragOffsetY_ = contains(sidebarPlaylistScrollbarThumb, event.x, event.y)
+            ? event.y - sidebarPlaylistScrollbarThumbY_
+            : sidebarPlaylistScrollbarThumbHeight_ * 0.5f;
+        setSidebarPlaylistScrollFromPointer(event.y);
+        window_.setCursor(WaylandWindow::CursorShape::Pointer);
+        return;
+    }
+
+    if (!addSongsMenuOpen_
+        && event.type == WaylandWindow::PointerEventType::Scroll
+        && event.scrollY != 0.0f
+        && sidebarPlaylistScrollbarVisible
+        && sidebarPlaylistViewportContains(event.x, event.y)) {
+        if (event.scrollY > 0.0f) {
+            setSidebarPlaylistFirstVisibleRow(sidebarPlaylistFirstVisibleRow_ + 1);
+        } else if (sidebarPlaylistFirstVisibleRow_ > 0) {
+            setSidebarPlaylistFirstVisibleRow(sidebarPlaylistFirstVisibleRow_ - 1);
+        }
+        return;
+    }
+
+    if (!addSongsMenuOpen_ && event.type == WaylandWindow::PointerEventType::ButtonPress) {
+        const bool searchFocused = playlistSearchFieldContains(event.x, event.y);
+        if (playlistSearchFocused_ != searchFocused) {
+            playlistSearchFocused_ = searchFocused;
+            resetSearchCaretBlink();
+            if (Primitive* primitive = primitives_.find(playlistSearchFieldId_)) {
+                if (auto* textField = std::get_if<TextFieldPrimitive>(&primitive->geometry)) {
+                    textField->focused = playlistSearchFocused_;
+                    textField->caretVisible = searchCaretVisible_;
+                }
+                primitive->style.stroke = playlistSearchFocused_ ? rgb(167, 192, 128) : rgb(71, 82, 88);
+            }
+            refreshPrimitives();
+        }
+    }
+
+    const float playlistScrollbarHitX = playlistScrollbarTrackX_
+        - (playlistTrackScrollbarHitWidth - playlistScrollbarTrackWidth_) * 0.5f;
+    const Rect playlistScrollbarHitTarget{
+        .x = playlistScrollbarHitX,
+        .y = playlistScrollbarTrackY_,
+        .width = playlistTrackScrollbarHitWidth,
+        .height = playlistScrollbarTrackHeight_,
+    };
+    const Rect playlistScrollbarThumb{
+        .x = playlistScrollbarHitX,
+        .y = playlistScrollbarThumbY_,
+        .width = playlistTrackScrollbarHitWidth,
+        .height = playlistScrollbarThumbHeight_,
+    };
+    const bool playlistScrollbarVisible = playlistScrollbarThumbHeight_ > 0.0f;
+    const auto setPlaylistScrollFromPointer = [&](float pointerY) {
+        const float thumbTravel = std::max(0.0f, playlistScrollbarTrackHeight_ - playlistScrollbarThumbHeight_);
+        const std::size_t maxFirstVisibleRow = playlistTrackMaxFirstVisibleRow();
+        if (!playlistScrollbarVisible || thumbTravel <= 0.0f || maxFirstVisibleRow == 0) {
+            return;
+        }
+
+        const float thumbY = std::clamp(
+            pointerY - playlistScrollbarDragOffsetY_,
+            playlistScrollbarTrackY_,
+            playlistScrollbarTrackY_ + thumbTravel);
+        const float scrollRatio = (thumbY - playlistScrollbarTrackY_) / thumbTravel;
+        setPlaylistFirstVisibleRow(static_cast<std::size_t>(std::round(
+            scrollRatio * static_cast<float>(maxFirstVisibleRow))));
+    };
+
+    if (draggingPlaylistScrollbar_) {
+        if (event.type == WaylandWindow::PointerEventType::Move) {
+            setPlaylistScrollFromPointer(event.y);
+            window_.setCursor(WaylandWindow::CursorShape::Pointer);
+            return;
+        }
+        if (event.type == WaylandWindow::PointerEventType::ButtonRelease) {
+            setPlaylistScrollFromPointer(event.y);
+            draggingPlaylistScrollbar_ = false;
+            window_.setCursor(WaylandWindow::CursorShape::Pointer);
+            return;
+        }
+        if (event.type == WaylandWindow::PointerEventType::Leave) {
+            draggingPlaylistScrollbar_ = false;
+        }
+    }
+
+    const bool hoveringPlaylistScrollbar = !addSongsMenuOpen_
+        && playlistScrollbarVisible
+        && event.type != WaylandWindow::PointerEventType::Leave
+        && contains(playlistScrollbarHitTarget, event.x, event.y);
+    if (event.type == WaylandWindow::PointerEventType::ButtonPress && hoveringPlaylistScrollbar) {
+        draggingPlaylistScrollbar_ = true;
+        playlistScrollbarDragOffsetY_ = contains(playlistScrollbarThumb, event.x, event.y)
+            ? event.y - playlistScrollbarThumbY_
+            : playlistScrollbarThumbHeight_ * 0.5f;
+        setPlaylistScrollFromPointer(event.y);
+        window_.setCursor(WaylandWindow::CursorShape::Pointer);
+        return;
+    }
+
+    if (!addSongsMenuOpen_
+        && event.type == WaylandWindow::PointerEventType::Scroll
+        && event.scrollY != 0.0f
+        && playlistTrackViewportContains(event.x, event.y)) {
+        if (event.scrollY > 0.0f) {
+            setPlaylistFirstVisibleRow(playlistFirstVisibleRow_ + 1);
+        } else if (playlistFirstVisibleRow_ > 0) {
+            setPlaylistFirstVisibleRow(playlistFirstVisibleRow_ - 1);
+        }
+        return;
+    }
+
+    std::size_t hoveredPlaylistSlot = static_cast<std::size_t>(-1);
+    if (!addSongsMenuOpen_
+        && event.type != WaylandWindow::PointerEventType::Leave
+        && playlistTrackViewportContains(event.x, event.y)) {
+        const float relativeY = event.y - playlistTrackViewportY_;
+        const std::size_t slot = static_cast<std::size_t>(relativeY / playlistTrackRowStride);
+        const float yWithinStride = relativeY - static_cast<float>(slot) * playlistTrackRowStride;
+        if (slot < playlistTrackRows_.size() && yWithinStride <= playlistTrackRowHeight && playlistTrackRows_[slot].active) {
+            hoveredPlaylistSlot = slot;
+        }
+    }
+    if (hoveredPlaylistTrackSlot_ != hoveredPlaylistSlot) {
+        refreshPlaylistTrackRowHover(hoveredPlaylistSlot);
     }
 
     const bool hoveringMediaProgressSlider = !addSongsMenuOpen_
@@ -3485,6 +4418,15 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
     bool changed = false;
     bool hasHoveredButton = false;
     PrimitiveId releasedButton = 0;
+    const auto pointerInsidePrimitiveClip = [&event](const Primitive& primitive) {
+        if (!primitive.clip) {
+            return true;
+        }
+        return event.x >= primitive.clip->x
+            && event.x <= primitive.clip->x + primitive.clip->width
+            && event.y >= primitive.clip->y
+            && event.y <= primitive.clip->y + primitive.clip->height;
+    };
 
     for (Primitive& primitive : primitives_.all()) {
         auto* button = std::get_if<ButtonPrimitive>(&primitive.geometry);
@@ -3497,7 +4439,8 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
             button->y + button->height * 0.5f);
         const bool canInteract = primitive.visible
             && button->enabled
-            && (!addSongsMenuOpen_ || isModalButton);
+            && (!addSongsMenuOpen_ || isModalButton)
+            && pointerInsidePrimitiveClip(primitive);
         const bool isHovered = canInteract
             && event.type != WaylandWindow::PointerEventType::Leave
             && contains(*button, event.x, event.y);
@@ -3531,7 +4474,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         pressedButton_ = 0;
     }
 
-    window_.setCursor(hasHoveredButton || hoveringPendingSongsScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider ? WaylandWindow::CursorShape::Pointer : WaylandWindow::CursorShape::Default);
+    window_.setCursor(hasHoveredButton || hoveringPendingSongsScrollbar || hoveringSidebarPlaylistScrollbar || hoveringPlaylistScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider ? WaylandWindow::CursorShape::Pointer : WaylandWindow::CursorShape::Default);
 
     if (changed) {
         refreshPrimitives();
@@ -3554,12 +4497,13 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
                         postClickButton->y + postClickButton->height * 0.5f);
                     const bool canInteract = postClickPrimitive.visible
                         && postClickButton->enabled
-                        && (!addSongsMenuOpen_ || isModalButton);
+                        && (!addSongsMenuOpen_ || isModalButton)
+                        && pointerInsidePrimitiveClip(postClickPrimitive);
                     postClickButton->hovered = canInteract && contains(*postClickButton, event.x, event.y);
                     hasPostClickHoveredButton = hasPostClickHoveredButton || postClickButton->hovered;
                 }
 
-                window_.setCursor(hasPostClickHoveredButton || hoveringPendingSongsScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider ? WaylandWindow::CursorShape::Pointer : WaylandWindow::CursorShape::Default);
+                window_.setCursor(hasPostClickHoveredButton || hoveringPendingSongsScrollbar || hoveringSidebarPlaylistScrollbar || hoveringPlaylistScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider ? WaylandWindow::CursorShape::Pointer : WaylandWindow::CursorShape::Default);
                 refreshPrimitives();
             }
         }
@@ -3577,21 +4521,31 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
     }
 
     if (event.key == KEY_ESC) {
-        closeAddSongsMenu();
+        if (addSongsMenuOpen_) {
+            closeAddSongsMenu();
+        } else if (playlistSearchFocused_) {
+            playlistSearchFocused_ = false;
+            rebuildScene();
+        }
         return;
     }
 
-    if (!addSongsSearchFocused_) {
+    if (!addSongsSearchFocused_ && !playlistSearchFocused_) {
         return;
     }
 
-    resetAddSongsCaretBlink();
+    resetSearchCaretBlink();
 
     if (event.key == KEY_BACKSPACE) {
-        if (!addSongsSearchQuery_.empty()) {
+        if (addSongsSearchFocused_ && !addSongsSearchQuery_.empty()) {
             std::string query = addSongsSearchQuery_;
             query.pop_back();
             setAddSongsSearchQuery(std::move(query));
+            rebuildScene();
+        } else if (playlistSearchFocused_ && !playlistSearchQuery_.empty()) {
+            std::string query = playlistSearchQuery_;
+            query.pop_back();
+            setPlaylistSearchQuery(std::move(query));
             rebuildScene();
         }
         return;
@@ -3599,9 +4553,15 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
 
     const char character = characterForKey(event.key);
     if (character != '\0') {
-        std::string query = addSongsSearchQuery_;
-        query.push_back(character);
-        setAddSongsSearchQuery(std::move(query));
+        if (addSongsSearchFocused_) {
+            std::string query = addSongsSearchQuery_;
+            query.push_back(character);
+            setAddSongsSearchQuery(std::move(query));
+        } else {
+            std::string query = playlistSearchQuery_;
+            query.push_back(character);
+            setPlaylistSearchQuery(std::move(query));
+        }
         rebuildScene();
     }
 }
