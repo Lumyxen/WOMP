@@ -42,6 +42,8 @@ private:
         PlaylistId id = 0;
         std::string name;
         std::chrono::system_clock::time_point createdAt;
+        std::int64_t position = 0;
+        bool pinned = false;
         std::vector<TrackId> trackIndexes;
         std::unordered_set<TrackId> trackIndexSet;
     };
@@ -93,6 +95,8 @@ private:
 
     void selectPlaylist(PlaylistId id);
     void createPlaylist();
+    bool setPlaylistPinned(PlaylistId id, bool pinned);
+    void sortPlaylists();
     bool addTrackToPlaylist(PlaylistId playlistId, const TrackId& trackId);
     void toggleCreatePlaylistMenu();
     void closeCreatePlaylistMenu();
@@ -124,8 +128,8 @@ private:
     void togglePlayback();
     void toggleShuffle();
     void toggleTrackPlayback(const TrackId& trackId);
-    void playTrack(const TrackId& trackId, bool shuffle = false);
-    void playSelectedSource(bool shuffle);
+    void playTrack(const TrackId& trackId);
+    void playSelectedSource();
     void playNext(bool userInitiated);
     void playPrevious();
     void startCurrentTrack();

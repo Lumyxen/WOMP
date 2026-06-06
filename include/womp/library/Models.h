@@ -37,6 +37,7 @@ struct PlaylistRecord {
     std::string name;
     std::int64_t createdAtMs = 0;
     std::int64_t position = 0;
+    bool pinned = false;
     std::vector<TrackId> trackIds;
 };
 

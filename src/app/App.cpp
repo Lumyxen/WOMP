@@ -1191,6 +1191,8 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     constexpr float sidebarPadding = 16.0f;
     constexpr float sidebarButtonHeight = 36.0f;
     constexpr float sidebarButtonGap = 4.0f;
+    constexpr float sidebarPlaylistPinIconSize = 18.0f;
+    constexpr float sidebarPlaylistPinIconInset = 12.0f;
     const float sidebarWidth = std::clamp(windowWidth * 0.32f, minSidebarWidth, preferredSidebarWidth);
     const float sidebarButtonWidth = std::max(0.0f, sidebarWidth - sidebarPadding * 2.0f);
     constexpr float bottomBarHeight = 72.0f;
@@ -1234,6 +1236,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string settingsIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings2-icon lucide-settings-2"><path d="M14 17H5"/><path d="M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>)";
     const std::string playlistIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-music-icon lucide-list-music"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M11 19H3"/><path d="M21 16V5"/><circle cx="18" cy="16" r="3"/></svg>)";
     const std::string pinIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin-icon lucide-pin"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>)";
+    const std::string pinOffIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin-off-icon lucide-pin-off"><path d="M12 17v5"/><path d="M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89"/><path d="m2 2 20 20"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11"/></svg>)";
     const std::string renameIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>)";
     const std::string exportIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload-icon lucide-upload"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>)";
     const std::string deleteIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>)";
@@ -1765,7 +1768,12 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 removePlaylist(playlistId);
             }
         });
-        addHeaderAction(pinIcon);
+        addHeaderAction(selectedPlaylist->pinned ? pinOffIcon : pinIcon, selectedPlaylist->pinned, false, [this, playlistId = selectedPlaylistId_]() {
+            const auto playlist = std::ranges::find(playlists_, playlistId, &Playlist::id);
+            if (playlist != playlists_.end()) {
+                setPlaylistPinned(playlistId, !playlist->pinned);
+            }
+        });
         addHeaderAction(renameIcon);
         addHeaderAction(exportIcon);
     }
@@ -1773,7 +1781,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
         if (selectedSourceIsCurrent()) {
             togglePlayback();
         } else {
-            playSelectedSource(false);
+            playSelectedSource();
         }
     });
 
@@ -2115,6 +2123,31 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 .width = sidebarPlaylistViewportWidth_,
                 .height = sidebarPlaylistViewportHeight_,
             };
+        }
+        if (playlist.pinned) {
+            Primitive pin = Primitive::svg(
+                {
+                    .x = sidebarPadding + playlistButtonWidth - sidebarPlaylistPinIconInset - sidebarPlaylistPinIconSize,
+                    .y = rowY + (sidebarPlaylistButtonHeight - sidebarPlaylistPinIconSize) * 0.5f,
+                    .width = sidebarPlaylistPinIconSize,
+                    .height = sidebarPlaylistPinIconSize,
+                    .rasterScale = 4.0f,
+                    .source = pinIcon,
+                    .sourceType = SvgSourceType::Data,
+                    .renderMode = SvgRenderMode::Mask,
+                },
+                {
+                    .fill = accent,
+                    .stroke = transparent,
+                    .strokeWidth = 0.0f,
+                });
+            pin.clip = PrimitiveClipRect{
+                .x = sidebarPlaylistViewportX_,
+                .y = sidebarPlaylistViewportY_,
+                .width = sidebarPlaylistViewportWidth_,
+                .height = sidebarPlaylistViewportHeight_,
+            };
+            primitives_.add(std::move(pin));
         }
     }
 
@@ -3027,10 +3060,12 @@ void App::run()
 PlaylistId App::addPlaylist(std::string name)
 {
     const PlaylistId id = libraryStore_.createPlaylist(name);
+    const auto maxPosition = std::ranges::max_element(playlists_, {}, &Playlist::position);
     playlists_.push_back({
         .id = id,
         .name = std::move(name),
         .createdAt = std::chrono::system_clock::now(),
+        .position = maxPosition == playlists_.end() ? 0 : maxPosition->position + 1,
     });
     if (sceneReady_) {
         rebuildScene();
@@ -3091,6 +3126,8 @@ void App::reloadLibrary()
             .id = record.id,
             .name = std::move(record.name),
             .createdAt = std::chrono::system_clock::time_point{std::chrono::milliseconds{record.createdAtMs}},
+            .position = record.position,
+            .pinned = record.pinned,
             .trackIndexes = std::move(record.trackIds),
         };
         playlist.trackIndexSet.insert(playlist.trackIndexes.begin(), playlist.trackIndexes.end());
@@ -3249,10 +3286,12 @@ void App::createPlaylist()
     }
 
     selectedPlaylistId_ = libraryStore_.createPlaylist(name);
+    const auto maxPosition = std::ranges::max_element(playlists_, {}, &Playlist::position);
     playlists_.push_back({
         .id = selectedPlaylistId_,
         .name = std::move(name),
         .createdAt = std::chrono::system_clock::now(),
+        .position = maxPosition == playlists_.end() ? 0 : maxPosition->position + 1,
     });
     sidebarPlaylistFirstVisibleRow_ = playlists_.size() - 1;
     playlistSearchQuery_.clear();
@@ -3260,6 +3299,36 @@ void App::createPlaylist()
     filteredPlaylistTrackIndexes_.clear();
     playlistFirstVisibleRow_ = 0;
     rebuildScene();
+}
+
+bool App::setPlaylistPinned(PlaylistId id, bool pinned)
+{
+    const auto playlist = std::ranges::find(playlists_, id, &Playlist::id);
+    if (playlist == playlists_.end() || playlist->pinned == pinned) {
+        return false;
+    }
+    if (!libraryStore_.setPlaylistPinned(id, pinned)) {
+        return false;
+    }
+
+    playlist->pinned = pinned;
+    sortPlaylists();
+    sidebarPlaylistFirstVisibleRow_ = 0;
+    rebuildScene();
+    return true;
+}
+
+void App::sortPlaylists()
+{
+    std::ranges::sort(playlists_, [](const Playlist& left, const Playlist& right) {
+        if (left.pinned != right.pinned) {
+            return left.pinned > right.pinned;
+        }
+        if (left.position != right.position) {
+            return left.position < right.position;
+        }
+        return left.id < right.id;
+    });
 }
 
 void App::setPlaylistSearchQuery(std::string query)
@@ -4323,7 +4392,7 @@ bool App::playlistSearchFieldContains(float x, float y) const
 void App::togglePlayback()
 {
     if (!hasCurrentSong_) {
-        playSelectedSource(false);
+        playSelectedSource();
         return;
     }
 
@@ -4458,7 +4527,7 @@ bool App::selectedSourceIsCurrent() const
     return playbackQueue_.current() && playbackQueue_.sourcePlaylistId() == selectedSourceId;
 }
 
-void App::playTrack(const TrackId& trackId, bool shuffle)
+void App::playTrack(const TrackId& trackId)
 {
     std::vector<TrackId> source = selectedSourceTrackIds();
     if (std::ranges::find(source, trackId) == source.end()) {
@@ -4472,19 +4541,17 @@ void App::playTrack(const TrackId& trackId, bool shuffle)
         std::move(source),
         selectedPlaylistId_ == 0 ? std::nullopt : std::optional<PlaylistId>{selectedPlaylistId_},
         trackId,
-        shuffle);
-    shuffleEnabled_ = shuffle;
-    libraryStore_.setSetting("shuffle", shuffleEnabled_ ? "1" : "0");
+        shuffleEnabled_);
     startCurrentTrack();
 }
 
-void App::playSelectedSource(bool shuffle)
+void App::playSelectedSource()
 {
     const std::vector<TrackId> source = selectedSourceTrackIds();
     if (source.empty()) {
         return;
     }
-    if (selectedSourceIsCurrent() && !shuffle) {
+    if (selectedSourceIsCurrent()) {
         audioPlayer_.resume();
         playing_ = true;
         updateMpris();
@@ -4498,10 +4565,8 @@ void App::playSelectedSource(bool shuffle)
     playbackQueue_.start(
         source,
         selectedPlaylistId_ == 0 ? std::nullopt : std::optional<PlaylistId>{selectedPlaylistId_},
-        shuffle ? TrackId{} : source.front(),
-        shuffle);
-    shuffleEnabled_ = shuffle;
-    libraryStore_.setSetting("shuffle", shuffleEnabled_ ? "1" : "0");
+        shuffleEnabled_ ? TrackId{} : source.front(),
+        shuffleEnabled_);
     startCurrentTrack();
 }
 

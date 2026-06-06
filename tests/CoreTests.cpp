@@ -225,6 +225,46 @@ void testM3u()
     CHECK(found->trackIds == result.trackIds);
 }
 
+void testPlaylistPinning()
+{
+    TemporaryDirectory temporary;
+    const auto library = temporary.path() / "library";
+    {
+        LibraryStore store(library);
+        const PlaylistId first = store.createPlaylist("First");
+        const PlaylistId second = store.createPlaylist("Second");
+        const PlaylistId third = store.createPlaylist("Third");
+
+        CHECK(store.setPlaylistPinned(third, true));
+        auto playlists = store.loadPlaylists();
+        CHECK(playlists.size() == 3);
+        CHECK(playlists[0].id == third);
+        CHECK(playlists[0].pinned);
+        CHECK(playlists[1].id == first);
+        CHECK(playlists[2].id == second);
+
+        CHECK(store.setPlaylistPinned(first, true));
+        playlists = store.loadPlaylists();
+        CHECK(playlists[0].id == first);
+        CHECK(playlists[1].id == third);
+        CHECK(playlists[2].id == second);
+
+        CHECK(store.setPlaylistPinned(first, false));
+        playlists = store.loadPlaylists();
+        CHECK(playlists[0].id == third);
+        CHECK(playlists[1].id == first);
+        CHECK(playlists[2].id == second);
+        CHECK(!store.setPlaylistPinned(9999, true));
+        CHECK(!store.setPlaylistPinned(third, true));
+    }
+
+    LibraryStore reopened(library);
+    const auto playlists = reopened.loadPlaylists();
+    CHECK(playlists.size() == 3);
+    CHECK(playlists[0].name == "Third");
+    CHECK(playlists[0].pinned);
+}
+
 void testLargeFlacImport()
 {
     TemporaryDirectory temporary;
@@ -380,6 +420,29 @@ void testLegacyDefaultPlaylistMigration()
     sqlite3_close(migratedDatabase);
 }
 
+void testVersionTwoPinMigration()
+{
+    TemporaryDirectory temporary;
+    const auto library = temporary.path() / "library";
+    std::filesystem::create_directories(library);
+    sqlite3* database = nullptr;
+    CHECK(sqlite3_open((library / "library.sqlite3").c_str(), &database) == SQLITE_OK);
+    CHECK(sqlite3_exec(database, R"SQL(
+        CREATE TABLE playlists(id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at_ms INTEGER NOT NULL, position INTEGER NOT NULL);
+        CREATE TABLE playlist_tracks(playlist_id INTEGER NOT NULL, track_id TEXT NOT NULL, position INTEGER NOT NULL);
+        INSERT INTO playlists VALUES(1, 'Existing', 0, 0);
+        PRAGMA user_version=2;
+    )SQL", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(database);
+
+    LibraryStore migrated(library);
+    const auto playlists = migrated.loadPlaylists();
+    CHECK(playlists.size() == 1);
+    CHECK(!playlists.front().pinned);
+    CHECK(migrated.setPlaylistPinned(playlists.front().id, true));
+    CHECK(migrated.loadPlaylists().front().pinned);
+}
+
 void testAudioAndPrimitive()
 {
     TemporaryDirectory temporary;
@@ -427,11 +490,13 @@ int main()
     try {
         testStoreAndImport();
         testM3u();
+        testPlaylistPinning();
         testLargeFlacImport();
         testQueue();
         testStatistics();
         testLegacyAndMalformed();
         testLegacyDefaultPlaylistMigration();
+        testVersionTwoPinMigration();
         testAudioAndPrimitive();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

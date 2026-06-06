@@ -35,6 +35,7 @@ public:
 
     PlaylistId createPlaylist(std::string_view name);
     bool removePlaylist(PlaylistId id);
+    bool setPlaylistPinned(PlaylistId id, bool pinned);
     bool addTrackToPlaylist(PlaylistId playlistId, const TrackId& trackId);
     bool removeTrackFromPlaylist(PlaylistId playlistId, const TrackId& trackId);
     bool removeTrackFromLibrary(const TrackId& trackId);

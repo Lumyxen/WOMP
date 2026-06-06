@@ -16,7 +16,7 @@ namespace womp {
 
 namespace {
 
-constexpr int schemaVersion = 2;
+constexpr int schemaVersion = 3;
 
 std::int64_t unixTimeMs()
 {
@@ -168,11 +168,14 @@ void LibraryStore::initialize()
     execute("PRAGMA synchronous=NORMAL");
     execute("PRAGMA quick_check");
 
-    Statement versionStatement(database_, "PRAGMA user_version");
-    if (sqlite3_step(versionStatement.get()) != SQLITE_ROW) {
-        throw std::runtime_error("failed to read SQLite schema version");
+    int version = 0;
+    {
+        Statement versionStatement(database_, "PRAGMA user_version");
+        if (sqlite3_step(versionStatement.get()) != SQLITE_ROW) {
+            throw std::runtime_error("failed to read SQLite schema version");
+        }
+        version = sqlite3_column_int(versionStatement.get(), 0);
     }
-    const int version = sqlite3_column_int(versionStatement.get(), 0);
     if (version > schemaVersion) {
         throw std::runtime_error("library database was created by a newer womp version");
     }
@@ -208,7 +211,8 @@ void LibraryStore::initialize()
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL,
-                position INTEGER NOT NULL
+                position INTEGER NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE playlist_tracks(
                 playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
@@ -227,29 +231,38 @@ void LibraryStore::initialize()
                 PRIMARY KEY(playlist_id, track_id),
                 FOREIGN KEY(playlist_id, track_id) REFERENCES playlist_tracks(playlist_id, track_id) ON DELETE CASCADE
             );
-            PRAGMA user_version=2;
+            PRAGMA user_version=3;
         )SQL");
         transaction.commit();
         migrateLegacyState();
-    } else if (version == 1) {
-        Transaction transaction(database_);
-        removeLegacyDefaultPlaylists();
-        execute(R"SQL(
-            UPDATE tracks SET format_label=CASE LOWER(format_label)
-                WHEN 'audio/x-flac' THEN 'FLAC'
-                WHEN 'application/x-id3' THEN 'MP3'
-                WHEN 'audio/mpeg' THEN 'MP3'
-                WHEN 'audio/x-wav' THEN 'WAV'
-                WHEN 'audio/x-riff' THEN 'WAV'
-                WHEN 'audio/x-aiff' THEN 'AIFF'
-                WHEN 'audio/x-vorbis' THEN 'OGG'
-                WHEN 'application/ogg' THEN 'OGG'
-                WHEN 'audio/x-opus' THEN 'OPUS'
-                ELSE format_label
-            END
-        )SQL");
-        execute("PRAGMA user_version=2");
-        transaction.commit();
+    } else {
+        if (version == 1) {
+            Transaction transaction(database_);
+            removeLegacyDefaultPlaylists();
+            execute(R"SQL(
+                UPDATE tracks SET format_label=CASE LOWER(format_label)
+                    WHEN 'audio/x-flac' THEN 'FLAC'
+                    WHEN 'application/x-id3' THEN 'MP3'
+                    WHEN 'audio/mpeg' THEN 'MP3'
+                    WHEN 'audio/x-wav' THEN 'WAV'
+                    WHEN 'audio/x-riff' THEN 'WAV'
+                    WHEN 'audio/x-aiff' THEN 'AIFF'
+                    WHEN 'audio/x-vorbis' THEN 'OGG'
+                    WHEN 'application/ogg' THEN 'OGG'
+                    WHEN 'audio/x-opus' THEN 'OPUS'
+                    ELSE format_label
+                END
+            )SQL");
+            execute("PRAGMA user_version=2");
+            transaction.commit();
+            version = 2;
+        }
+        if (version == 2) {
+            Transaction transaction(database_);
+            execute("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+            execute("PRAGMA user_version=3");
+            transaction.commit();
+        }
     }
 }
 
@@ -349,7 +362,7 @@ std::vector<PlaylistRecord> LibraryStore::loadPlaylists() const
         tracksByPlaylist[sqlite3_column_int64(tracks.get(), 0)].push_back(columnText(tracks.get(), 1));
     }
 
-    Statement statement(database_, "SELECT id, name, created_at_ms, position FROM playlists ORDER BY position, id");
+    Statement statement(database_, "SELECT id, name, created_at_ms, position, pinned FROM playlists ORDER BY pinned DESC, position, id");
     std::vector<PlaylistRecord> playlists;
     while (sqlite3_step(statement.get()) == SQLITE_ROW) {
         PlaylistRecord playlist{
@@ -357,6 +370,7 @@ std::vector<PlaylistRecord> LibraryStore::loadPlaylists() const
             .name = columnText(statement.get(), 1),
             .createdAtMs = sqlite3_column_int64(statement.get(), 2),
             .position = sqlite3_column_int64(statement.get(), 3),
+            .pinned = sqlite3_column_int(statement.get(), 4) != 0,
         };
         if (auto found = tracksByPlaylist.find(playlist.id); found != tracksByPlaylist.end()) {
             playlist.trackIds = std::move(found->second);
@@ -444,6 +458,17 @@ bool LibraryStore::removePlaylist(PlaylistId id)
     std::lock_guard lock(databaseMutex_);
     Statement statement(database_, "DELETE FROM playlists WHERE id=?");
     sqlite3_bind_int64(statement.get(), 1, id);
+    requireDone(database_, statement.get());
+    return sqlite3_changes(database_) != 0;
+}
+
+bool LibraryStore::setPlaylistPinned(PlaylistId id, bool pinned)
+{
+    std::lock_guard lock(databaseMutex_);
+    Statement statement(database_, "UPDATE playlists SET pinned=? WHERE id=? AND pinned<>?");
+    sqlite3_bind_int(statement.get(), 1, pinned ? 1 : 0);
+    sqlite3_bind_int64(statement.get(), 2, id);
+    sqlite3_bind_int(statement.get(), 3, pinned ? 1 : 0);
     requireDone(database_, statement.get());
     return sqlite3_changes(database_) != 0;
 }
