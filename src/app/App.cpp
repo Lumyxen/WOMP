@@ -5400,6 +5400,11 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
         return;
     }
 
+    if (event.key == KEY_PLAYPAUSE) {
+        togglePlayback();
+        return;
+    }
+
     if (addSongsAudioScanActive_) {
         return;
     }
