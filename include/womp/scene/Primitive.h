@@ -116,7 +116,12 @@ struct TextFieldPrimitive {
     Color textColor{0.05f, 0.05f, 0.05f, 1.0f};
     Color placeholderColor{0.45f, 0.45f, 0.45f, 1.0f};
     Color caretColor{0.05f, 0.05f, 0.05f, 1.0f};
+    Color selectionColor{0.25f, 0.45f, 0.75f, 1.0f};
+    Color selectedTextColor{1.0f, 1.0f, 1.0f, 1.0f};
     std::size_t caretCodepointIndex = 0;
+    std::size_t selectionStartCodepointIndex = 0;
+    std::size_t selectionEndCodepointIndex = 0;
+    float horizontalScrollOffset = 0.0f;
     bool focused = false;
     bool caretVisible = true;
 };

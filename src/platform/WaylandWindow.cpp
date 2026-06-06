@@ -431,8 +431,12 @@ void WaylandWindow::keyboardEnter(void*, wl_keyboard*, std::uint32_t, wl_surface
 {
 }
 
-void WaylandWindow::keyboardLeave(void*, wl_keyboard*, std::uint32_t, wl_surface*)
+void WaylandWindow::keyboardLeave(void* data, wl_keyboard*, std::uint32_t, wl_surface*)
 {
+    auto* window = static_cast<WaylandWindow*>(data);
+    window->controlPressed_ = false;
+    window->shiftPressed_ = false;
+    window->altPressed_ = false;
 }
 
 void WaylandWindow::keyboardKey(
@@ -444,10 +448,31 @@ void WaylandWindow::keyboardKey(
     std::uint32_t state)
 {
     auto* window = static_cast<WaylandWindow*>(data);
+    const bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+    switch (key) {
+    case KEY_LEFTCTRL:
+    case KEY_RIGHTCTRL:
+        window->controlPressed_ = pressed;
+        break;
+    case KEY_LEFTSHIFT:
+    case KEY_RIGHTSHIFT:
+        window->shiftPressed_ = pressed;
+        break;
+    case KEY_LEFTALT:
+    case KEY_RIGHTALT:
+        window->altPressed_ = pressed;
+        break;
+    default:
+        break;
+    }
+
     if (window->keyEventHandler_) {
         window->keyEventHandler_({
-            .type = state == WL_KEYBOARD_KEY_STATE_PRESSED ? KeyEventType::Press : KeyEventType::Release,
+            .type = pressed ? KeyEventType::Press : KeyEventType::Release,
             .key = key,
+            .control = window->controlPressed_,
+            .shift = window->shiftPressed_,
+            .alt = window->altPressed_,
         });
     }
 }
@@ -506,6 +531,11 @@ wl_cursor* WaylandWindow::cursorForShape(CursorShape shape) const
     }
 
     switch (shape) {
+    case CursorShape::Text:
+        if (wl_cursor* cursor = wl_cursor_theme_get_cursor(cursorTheme_, "text")) {
+            return cursor;
+        }
+        return wl_cursor_theme_get_cursor(cursorTheme_, "xterm");
     case CursorShape::Pointer:
         if (wl_cursor* cursor = wl_cursor_theme_get_cursor(cursorTheme_, "pointer")) {
             return cursor;

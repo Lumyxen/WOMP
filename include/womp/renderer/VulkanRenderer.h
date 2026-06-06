@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -127,6 +128,7 @@ private:
 
     std::unordered_map<PrimitiveId, std::vector<TextGlyphDraw>> textGlyphs_;
     std::unordered_map<PrimitiveId, float> textCaretX_;
+    std::unordered_map<PrimitiveId, std::array<float, 2>> textSelectionX_;
 
     struct SvgDraw {
         float rect[4]{};

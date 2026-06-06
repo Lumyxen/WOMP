@@ -18,6 +18,7 @@ public:
     enum class CursorShape {
         Default,
         Pointer,
+        Text,
     };
 
     enum class PointerEventType {
@@ -44,6 +45,9 @@ public:
     struct KeyEvent {
         KeyEventType type = KeyEventType::Press;
         std::uint32_t key = 0;
+        bool control = false;
+        bool shift = false;
+        bool alt = false;
     };
 
     WaylandWindow(std::uint32_t width, std::uint32_t height, const std::string& title);
@@ -152,6 +156,9 @@ private:
     float pointerX_ = 0.0f;
     float pointerY_ = 0.0f;
     CursorShape cursorShape_ = CursorShape::Default;
+    bool controlPressed_ = false;
+    bool shiftPressed_ = false;
+    bool altPressed_ = false;
     std::function<void(const PointerEvent&)> pointerEventHandler_;
     std::function<void(const KeyEvent&)> keyEventHandler_;
 };

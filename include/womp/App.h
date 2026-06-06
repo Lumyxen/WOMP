@@ -69,9 +69,25 @@ private:
         Files,
     };
 
+    enum class SearchField {
+        None,
+        AddSongs,
+        Playlist,
+    };
+
+    struct TextEditState {
+        std::size_t caretIndex = 0;
+        std::size_t selectionAnchor = 0;
+        float horizontalScrollOffset = 0.0f;
+    };
+
     void selectPlaylist(PlaylistId id);
     void createPlaylist();
     bool addTrackToPlaylist(PlaylistId playlistId, std::size_t trackIndex);
+    void toggleCreatePlaylistMenu();
+    void closeCreatePlaylistMenu();
+    void beginImportPlaylistFiles();
+    void importPlaylistFiles(const std::vector<std::filesystem::path>& paths);
     void toggleAddSongsMenu();
     void closeAddSongsMenu();
     void beginImportFiles();
@@ -103,8 +119,14 @@ private:
     void buildInitialScene(float windowWidth, float windowHeight);
     void handlePointerEvent(const WaylandWindow::PointerEvent& event);
     void handleKeyEvent(const WaylandWindow::KeyEvent& event);
+    void clampTextEditState(TextEditState& state, const std::string& text) const;
+    float textFieldScrollOffset(TextEditState& state, const std::string& text, float contentWidth, float fontSize) const;
+    std::size_t textFieldCaretIndexAtX(const TextFieldPrimitive& field, const std::string& text, float x) const;
     void refreshPrimitives(VulkanRenderer::PrimitiveUpdate update = VulkanRenderer::PrimitiveUpdate::DrawOnly);
     std::vector<Primitive> renderPrimitives(VulkanRenderer::PrimitiveUpdate update) const;
+    bool anyModalOpen() const;
+    bool activeModalContains(float x, float y) const;
+    bool createPlaylistMenuContains(float x, float y) const;
     bool addSongsMenuContains(float x, float y) const;
     bool addSongsSearchFieldContains(float x, float y) const;
     bool playlistSearchFieldContains(float x, float y) const;
@@ -137,8 +159,11 @@ private:
     PlaylistId nextPlaylistId_ = 1;
     PlaylistId selectedPlaylistId_ = 0;
     PrimitiveId pressedButton_ = 0;
+    PrimitiveId firstModalPrimitiveId_ = 0;
+    bool createPlaylistMenuOpen_ = false;
     bool addSongsMenuOpen_ = false;
     bool addSongsSearchFocused_ = false;
+    TextEditState addSongsSearchEdit_;
     bool addSongsDirectoryOptionsVisible_ = false;
     bool addSongsPlaylistDropdownOpen_ = false;
     bool searchCaretVisible_ = true;
@@ -180,6 +205,7 @@ private:
     float sidebarPlaylistScrollbarThumbY_ = 0.0f;
     float sidebarPlaylistScrollbarThumbHeight_ = 0.0f;
     bool playlistSearchFocused_ = false;
+    TextEditState playlistSearchEdit_;
     std::string playlistSearchQuery_;
     std::string normalizedPlaylistSearchQuery_;
     std::vector<std::size_t> filteredPlaylistTrackIndexes_;
@@ -226,6 +252,7 @@ private:
     PrimitiveId audioScanProgressFillId_ = 0;
     PrimitiveId addSongsSearchFieldId_ = 0;
     PrimitiveId playlistSearchFieldId_ = 0;
+    SearchField draggingSearchSelection_ = SearchField::None;
     bool primitivesDirty_ = false;
     VulkanRenderer::PrimitiveUpdate pendingPrimitiveUpdate_ = VulkanRenderer::PrimitiveUpdate::Full;
     bool sceneReady_ = false;

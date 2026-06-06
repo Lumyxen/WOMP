@@ -297,7 +297,7 @@ float measureTextVisualWidth(
         penX += glyph.advance > 0.0f ? glyph.advance : fontSize * 0.5f;
     }
 
-    return visualRight;
+    return std::max(visualRight, penX);
 }
 
 std::vector<std::uint8_t> readFileBytes(const std::string& path)
@@ -595,13 +595,6 @@ Color buttonLabelColor(const ButtonPrimitive& button)
         return button.hoverLabelColor;
     }
     return button.labelColor;
-}
-
-Color textFieldColor(const TextFieldPrimitive& textField)
-{
-    return textField.text.empty() && !textField.placeholder.empty()
-        ? textField.placeholderColor
-        : textField.textColor;
 }
 
 } // namespace
@@ -1369,7 +1362,25 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                         .radius = textField->radius,
                     },
                     primitive.style));
-                drawText(textFieldColor(*textField));
+
+                const auto selection = textSelectionX_.find(primitive.id);
+                if (textField->focused && selection != textSelectionX_.end()) {
+                    const float contentLeft = textField->x + textField->padding;
+                    const float contentRight = textField->x + textField->width - textField->padding;
+                    const float selectionLeft = std::clamp(selection->second[0], contentLeft, contentRight);
+                    const float selectionRight = std::clamp(selection->second[1], contentLeft, contentRight);
+                    if (selectionRight > selectionLeft) {
+                        drawSdf(Primitive::quad(
+                            {
+                                .x = selectionLeft,
+                                .y = textField->y + textField->padding,
+                                .width = selectionRight - selectionLeft,
+                                .height = textField->height - textField->padding * 2.0f,
+                            },
+                            {.fill = textField->selectionColor}));
+                    }
+                }
+                drawText();
 
                 if (textField->focused && textField->caretVisible) {
                     float caretX = textField->x + textField->padding;
@@ -1377,6 +1388,10 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
                     if (caretPosition != textCaretX_.end()) {
                         caretX = caretPosition->second;
                     }
+                    caretX = std::clamp(
+                        caretX,
+                        textField->x + textField->padding,
+                        textField->x + textField->width - textField->padding);
                     Primitive caret = Primitive::line(
                         {
                             .x0 = caretX,
@@ -1460,6 +1475,7 @@ void VulkanRenderer::rebuildTextAtlas()
     cleanupTextAtlas();
     textGlyphs_.clear();
     textCaretX_.clear();
+    textSelectionX_.clear();
 
     FT_Library rawLibrary = nullptr;
     if (FT_Init_FreeType(&rawLibrary) != 0) {
@@ -1551,7 +1567,11 @@ void VulkanRenderer::rebuildTextAtlas()
                                 Color color,
                                 float maxX = std::numeric_limits<float>::max(),
                                 std::optional<std::size_t> caretCodepointIndex = std::nullopt,
-                                std::optional<float> centerInWidth = std::nullopt) {
+                                std::optional<float> centerInWidth = std::nullopt,
+                                float minX = std::numeric_limits<float>::lowest(),
+                                std::optional<std::size_t> selectionStartCodepointIndex = std::nullopt,
+                                std::optional<std::size_t> selectionEndCodepointIndex = std::nullopt,
+                                Color selectedTextColor = {}) {
         const std::uint32_t pixelSize = std::max(1u, static_cast<std::uint32_t>(fontSize + 0.5f));
         const float lineHeight = fontSize * 1.25f;
         const float originX = x;
@@ -1559,8 +1579,16 @@ void VulkanRenderer::rebuildTextAtlas()
         float baseline = y + fontSize;
         std::vector<TextGlyphDraw>& draws = textGlyphs_[id];
         std::size_t codepointIndex = 0;
+        std::optional<float> selectionStartX;
+        std::optional<float> selectionEndX;
         if (caretCodepointIndex && *caretCodepointIndex == 0) {
             textCaretX_[id] = penX;
+        }
+        if (selectionStartCodepointIndex && *selectionStartCodepointIndex == 0) {
+            selectionStartX = penX;
+        }
+        if (selectionEndCodepointIndex && *selectionEndCodepointIndex == 0) {
+            selectionEndX = penX;
         }
 
         for (std::uint32_t codepoint : decodeUtf8(text)) {
@@ -1577,6 +1605,16 @@ void VulkanRenderer::rebuildTextAtlas()
             const CachedGlyph* glyph = cacheGlyph(families, codepoint, pixelSize);
             if (glyph == nullptr) {
                 penX += fontSize * 0.5f;
+                ++codepointIndex;
+                if (caretCodepointIndex && *caretCodepointIndex == codepointIndex) {
+                    textCaretX_[id] = penX;
+                }
+                if (selectionStartCodepointIndex && *selectionStartCodepointIndex == codepointIndex) {
+                    selectionStartX = penX;
+                }
+                if (selectionEndCodepointIndex && *selectionEndCodepointIndex == codepointIndex) {
+                    selectionEndX = penX;
+                }
                 continue;
             }
 
@@ -1584,7 +1622,11 @@ void VulkanRenderer::rebuildTextAtlas()
             if (bitmap.width > 0 && bitmap.height > 0) {
                 const float glyphX = snapPixel(penX + static_cast<float>(bitmap.bearingX));
                 const float glyphY = snapPixel(baseline - static_cast<float>(bitmap.bearingY));
-                if (glyphX + static_cast<float>(bitmap.width) <= maxX) {
+                if (glyphX >= minX && glyphX + static_cast<float>(bitmap.width) <= maxX) {
+                    const bool selected = selectionStartCodepointIndex
+                        && selectionEndCodepointIndex
+                        && codepointIndex >= *selectionStartCodepointIndex
+                        && codepointIndex < *selectionEndCodepointIndex;
                     draws.push_back({
                         .rect = {glyphX, glyphY, static_cast<float>(bitmap.width), static_cast<float>(bitmap.height)},
                         .uv = {
@@ -1593,7 +1635,7 @@ void VulkanRenderer::rebuildTextAtlas()
                             static_cast<float>(bitmap.width) / static_cast<float>(atlasWidth),
                             static_cast<float>(bitmap.height) / static_cast<float>(atlasHeight),
                         },
-                        .color = color,
+                        .color = selected ? selectedTextColor : color,
                     });
                 }
             }
@@ -1603,13 +1645,19 @@ void VulkanRenderer::rebuildTextAtlas()
             if (caretCodepointIndex && *caretCodepointIndex == codepointIndex) {
                 textCaretX_[id] = penX;
             }
-            if (penX > maxX) {
-                break;
+            if (selectionStartCodepointIndex && *selectionStartCodepointIndex == codepointIndex) {
+                selectionStartX = penX;
+            }
+            if (selectionEndCodepointIndex && *selectionEndCodepointIndex == codepointIndex) {
+                selectionEndX = penX;
             }
         }
 
         if (caretCodepointIndex && textCaretX_.find(id) == textCaretX_.end()) {
             textCaretX_[id] = penX;
+        }
+        if (selectionStartX && selectionEndX && *selectionStartX != *selectionEndX) {
+            textSelectionX_[id] = {*selectionStartX, *selectionEndX};
         }
 
         if (centerInWidth && !draws.empty()) {
@@ -1636,16 +1684,23 @@ void VulkanRenderer::rebuildTextAtlas()
             layoutText(primitive.id, text->text, text->fontFamilies, text->x, text->y, text->fontSize, primitive.style.fill);
         } else if (const auto* textField = std::get_if<TextFieldPrimitive>(&primitive.geometry)) {
             const bool showingPlaceholder = textField->text.empty() && !textField->placeholder.empty();
+            const float contentLeft = textField->x + textField->padding;
+            const float contentRight = textField->x + textField->width - textField->padding;
             layoutText(
                 primitive.id,
                 showingPlaceholder ? textField->placeholder : textField->text,
                 textField->fontFamilies,
-                textField->x + textField->padding,
+                contentLeft - (showingPlaceholder ? 0.0f : textField->horizontalScrollOffset),
                 textField->y + textField->padding,
                 textField->fontSize,
                 showingPlaceholder ? textField->placeholderColor : textField->textColor,
-                textField->x + textField->width - textField->padding,
-                showingPlaceholder ? std::nullopt : std::optional<std::size_t>{textField->caretCodepointIndex});
+                contentRight,
+                showingPlaceholder ? std::nullopt : std::optional<std::size_t>{textField->caretCodepointIndex},
+                std::nullopt,
+                contentLeft,
+                showingPlaceholder ? std::nullopt : std::optional<std::size_t>{textField->selectionStartCodepointIndex},
+                showingPlaceholder ? std::nullopt : std::optional<std::size_t>{textField->selectionEndCodepointIndex},
+                textField->selectedTextColor);
         } else if (const auto* button = std::get_if<ButtonPrimitive>(&primitive.geometry)) {
             Color labelColor = button->labelColor;
             if (!button->enabled) {

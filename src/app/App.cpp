@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstddef>
@@ -112,6 +113,9 @@ constexpr float addSongsMenuWidth = 480.0f;
 constexpr float addSongsMenuHeight = 236.0f;
 constexpr float minAddSongsMenuWidth = 340.0f;
 constexpr float minAddSongsMenuHeight = 236.0f;
+constexpr float createPlaylistMenuWidth = 480.0f;
+constexpr float createPlaylistMenuHeight = 182.0f;
+constexpr float minCreatePlaylistMenuWidth = 340.0f;
 constexpr float addSongsPlaylistOptionHeight = 36.0f;
 constexpr float addSongsMenuButtonGap = 10.0f;
 constexpr float addSongsFullListWidth = 360.0f;
@@ -200,6 +204,18 @@ Rect addSongsMenuRect(
         preferredHeight,
         minAddSongsMenuWidth,
         std::max(minAddSongsMenuHeight, preferredHeight),
+        floatingMenuMargin);
+}
+
+Rect createPlaylistMenuRect(float windowWidth, float windowHeight)
+{
+    return centeredFitRect(
+        windowWidth,
+        windowHeight,
+        createPlaylistMenuWidth,
+        createPlaylistMenuHeight,
+        minCreatePlaylistMenuWidth,
+        createPlaylistMenuHeight,
         floatingMenuMargin);
 }
 
@@ -622,52 +638,98 @@ std::string lowercaseAscii(std::string text)
     return text;
 }
 
-char characterForKey(std::uint32_t key)
+char characterForKey(std::uint32_t key, bool shift)
 {
+    char letter = '\0';
     switch (key) {
-    case KEY_A: return 'a';
-    case KEY_B: return 'b';
-    case KEY_C: return 'c';
-    case KEY_D: return 'd';
-    case KEY_E: return 'e';
-    case KEY_F: return 'f';
-    case KEY_G: return 'g';
-    case KEY_H: return 'h';
-    case KEY_I: return 'i';
-    case KEY_J: return 'j';
-    case KEY_K: return 'k';
-    case KEY_L: return 'l';
-    case KEY_M: return 'm';
-    case KEY_N: return 'n';
-    case KEY_O: return 'o';
-    case KEY_P: return 'p';
-    case KEY_Q: return 'q';
-    case KEY_R: return 'r';
-    case KEY_S: return 's';
-    case KEY_T: return 't';
-    case KEY_U: return 'u';
-    case KEY_V: return 'v';
-    case KEY_W: return 'w';
-    case KEY_X: return 'x';
-    case KEY_Y: return 'y';
-    case KEY_Z: return 'z';
-    case KEY_0: return '0';
-    case KEY_1: return '1';
-    case KEY_2: return '2';
-    case KEY_3: return '3';
-    case KEY_4: return '4';
-    case KEY_5: return '5';
-    case KEY_6: return '6';
-    case KEY_7: return '7';
-    case KEY_8: return '8';
-    case KEY_9: return '9';
+    case KEY_A: letter = 'a'; break;
+    case KEY_B: letter = 'b'; break;
+    case KEY_C: letter = 'c'; break;
+    case KEY_D: letter = 'd'; break;
+    case KEY_E: letter = 'e'; break;
+    case KEY_F: letter = 'f'; break;
+    case KEY_G: letter = 'g'; break;
+    case KEY_H: letter = 'h'; break;
+    case KEY_I: letter = 'i'; break;
+    case KEY_J: letter = 'j'; break;
+    case KEY_K: letter = 'k'; break;
+    case KEY_L: letter = 'l'; break;
+    case KEY_M: letter = 'm'; break;
+    case KEY_N: letter = 'n'; break;
+    case KEY_O: letter = 'o'; break;
+    case KEY_P: letter = 'p'; break;
+    case KEY_Q: letter = 'q'; break;
+    case KEY_R: letter = 'r'; break;
+    case KEY_S: letter = 's'; break;
+    case KEY_T: letter = 't'; break;
+    case KEY_U: letter = 'u'; break;
+    case KEY_V: letter = 'v'; break;
+    case KEY_W: letter = 'w'; break;
+    case KEY_X: letter = 'x'; break;
+    case KEY_Y: letter = 'y'; break;
+    case KEY_Z: letter = 'z'; break;
+    default: break;
+    }
+    if (letter != '\0') {
+        return shift ? static_cast<char>(letter - 'a' + 'A') : letter;
+    }
+
+    switch (key) {
+    case KEY_0: return shift ? ')' : '0';
+    case KEY_1: return shift ? '!' : '1';
+    case KEY_2: return shift ? '@' : '2';
+    case KEY_3: return shift ? '#' : '3';
+    case KEY_4: return shift ? '$' : '4';
+    case KEY_5: return shift ? '%' : '5';
+    case KEY_6: return shift ? '^' : '6';
+    case KEY_7: return shift ? '&' : '7';
+    case KEY_8: return shift ? '*' : '8';
+    case KEY_9: return shift ? '(' : '9';
     case KEY_SPACE: return ' ';
-    case KEY_MINUS: return '-';
-    case KEY_DOT: return '.';
-    case KEY_SLASH: return '/';
+    case KEY_MINUS: return shift ? '_' : '-';
+    case KEY_EQUAL: return shift ? '+' : '=';
+    case KEY_LEFTBRACE: return shift ? '{' : '[';
+    case KEY_RIGHTBRACE: return shift ? '}' : ']';
+    case KEY_BACKSLASH: return shift ? '|' : '\\';
+    case KEY_SEMICOLON: return shift ? ':' : ';';
+    case KEY_APOSTROPHE: return shift ? '"' : '\'';
+    case KEY_GRAVE: return shift ? '~' : '`';
+    case KEY_COMMA: return shift ? '<' : ',';
+    case KEY_DOT: return shift ? '>' : '.';
+    case KEY_SLASH: return shift ? '?' : '/';
     default: break;
     }
     return '\0';
+}
+
+bool isWordCharacter(char character)
+{
+    const unsigned char value = static_cast<unsigned char>(character);
+    return std::isalnum(value) != 0 || character == '_';
+}
+
+std::size_t previousWordBoundary(std::string_view text, std::size_t index)
+{
+    index = std::min(index, text.size());
+    while (index > 0 && !isWordCharacter(text[index - 1])) {
+        --index;
+    }
+    while (index > 0 && isWordCharacter(text[index - 1])) {
+        --index;
+    }
+    return index;
+}
+
+std::size_t nextWordBoundary(std::string_view text, std::size_t index)
+{
+    index = std::min(index, text.size());
+    while (index < text.size() && isWordCharacter(text[index])) {
+        ++index;
+    }
+    while (index < text.size() && !isWordCharacter(text[index])) {
+        ++index;
+    }
+    return index;
 }
 
 std::string formatTimestamp(float seconds)
@@ -730,6 +792,119 @@ std::vector<std::filesystem::path> runFileImportDialog(const std::filesystem::pa
     pclose(pipe);
 
     return parseZenityPaths(output);
+}
+
+std::vector<std::filesystem::path> runPlaylistImportDialog(const std::filesystem::path& initialDirectory)
+{
+    const std::string command = std::string{"zenity --file-selection --multiple --separator=\"$(printf '\\037')\" "}
+        + "--title='Import playlists' "
+          "--file-filter='M3U playlists | *.m3u *.m3u8' "
+        + zenityFilenameArgument(initialDirectory)
+        + " 2>/dev/null";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+        return {};
+    }
+
+    std::string output;
+    std::array<char, 4096> buffer{};
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        output += buffer.data();
+    }
+    pclose(pipe);
+
+    return parseZenityPaths(output);
+}
+
+std::string displayNameForPath(const std::filesystem::path& path);
+
+struct ParsedPlaylistFile {
+    std::string name;
+    std::vector<std::filesystem::path> tracks;
+};
+
+bool isM3uPlaylistFile(const std::filesystem::path& path)
+{
+    std::string extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(), [](unsigned char character) {
+        return character >= 'A' && character <= 'Z'
+            ? static_cast<char>(character - 'A' + 'a')
+            : static_cast<char>(character);
+    });
+    return extension == ".m3u" || extension == ".m3u8";
+}
+
+bool isUrlEntry(std::string_view entry)
+{
+    const std::size_t colon = entry.find(':');
+    if (colon == std::string_view::npos || colon == 0) {
+        return false;
+    }
+    if ((entry[0] < 'A' || entry[0] > 'Z') && (entry[0] < 'a' || entry[0] > 'z')) {
+        return false;
+    }
+    return std::ranges::all_of(entry.substr(1, colon - 1), [](unsigned char character) {
+        return (character >= 'A' && character <= 'Z')
+            || (character >= 'a' && character <= 'z')
+            || (character >= '0' && character <= '9')
+            || character == '+'
+            || character == '-'
+            || character == '.';
+    });
+}
+
+bool parsePlaylistFile(const std::filesystem::path& playlistPath, ParsedPlaylistFile& playlist)
+{
+    if (!isM3uPlaylistFile(playlistPath)) {
+        return false;
+    }
+
+    std::ifstream file(playlistPath, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+
+    playlist = {
+        .name = displayNameForPath(playlistPath),
+    };
+    std::unordered_set<std::filesystem::path> seenTracks;
+    std::string line;
+    bool firstLine = true;
+    while (std::getline(file, line)) {
+        if (firstLine && line.starts_with("\xEF\xBB\xBF")) {
+            line.erase(0, 3);
+        }
+        firstLine = false;
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+
+        const std::size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) {
+            continue;
+        }
+        const std::size_t last = line.find_last_not_of(" \t");
+        const std::string_view entry{line.data() + first, last - first + 1};
+        if (entry.starts_with('#') || isUrlEntry(entry)) {
+            continue;
+        }
+
+        std::filesystem::path trackPath{entry};
+        if (trackPath.is_relative()) {
+            trackPath = playlistPath.parent_path() / trackPath;
+        }
+
+        std::error_code error;
+        const std::filesystem::path normalizedPath = std::filesystem::absolute(trackPath, error).lexically_normal();
+        if (error || !std::filesystem::is_regular_file(normalizedPath, error) || error || !isAudioFile(normalizedPath)) {
+            continue;
+        }
+        if (seenTracks.insert(normalizedPath).second) {
+            playlist.tracks.push_back(normalizedPath);
+        }
+    }
+
+    return true;
 }
 
 std::vector<std::filesystem::path> audioFilesInDirectory(const std::filesystem::path& directory)
@@ -1514,7 +1689,6 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             selectedPlaylistName = playlist->name;
         }
     }
-
     constexpr float headerPadding = 18.0f;
     constexpr float headerGap = 16.0f;
     constexpr float headerActionGap = 8.0f;
@@ -1712,6 +1886,12 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     }
 
     const float searchY = contentY + headerHeight + 18.0f;
+    clampTextEditState(playlistSearchEdit_, playlistSearchQuery_);
+    const float playlistSearchScrollOffset = textFieldScrollOffset(
+        playlistSearchEdit_,
+        playlistSearchQuery_,
+        contentWidth - 20.0f,
+        14.0f);
     playlistSearchFieldId_ = primitives_.add(Primitive::textField(
         {
             .x = contentX,
@@ -1727,7 +1907,12 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .textColor = sidebarText,
             .placeholderColor = iconGrey,
             .caretColor = sidebarText,
-            .caretCodepointIndex = playlistSearchQuery_.size(),
+            .selectionColor = accent,
+            .selectedTextColor = mantle,
+            .caretCodepointIndex = playlistSearchEdit_.caretIndex,
+            .selectionStartCodepointIndex = std::min(playlistSearchEdit_.caretIndex, playlistSearchEdit_.selectionAnchor),
+            .selectionEndCodepointIndex = std::max(playlistSearchEdit_.caretIndex, playlistSearchEdit_.selectionAnchor),
+            .horizontalScrollOffset = playlistSearchScrollOffset,
             .focused = playlistSearchFocused_,
             .caretVisible = searchCaretVisible_,
         },
@@ -2052,12 +2237,126 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .strokeWidth = 0.0f,
         }));
     addSidebarButton("Create Playlist", addPlaylistIcon, createPlaylistY, [this]() {
-        createPlaylist();
+        toggleCreatePlaylistMenu();
     });
     addSidebarButton("Import Songs", addSongsIcon, addSongsY, [this]() {
         toggleAddSongsMenu();
     });
     addSidebarButton("Settings", settingsIcon, helpY);
+
+    if (createPlaylistMenuOpen_) {
+        constexpr float menuPadding = 20.0f;
+        constexpr float menuButtonHeight = 44.0f;
+        constexpr float menuButtonGap = 10.0f;
+        constexpr float closeButtonSize = 30.0f;
+        constexpr float closeIconSize = 18.0f;
+        const Rect menu = createPlaylistMenuRect(windowWidth, windowHeight);
+        const Color menuBackground = rgb(52, 63, 68);
+        const Color dimOverlay = rgb(30, 35, 38, 0.72f);
+        const Color primaryButtonFill = rgb(55, 65, 69);
+        const Color primaryButtonHoverFill = rgb(65, 75, 80);
+        const Color primaryButtonPressedFill = rgb(73, 81, 86);
+        const auto addMenuButton = [&](std::string label, float y, std::function<void()> onClick) {
+            primitives_.add(Primitive::button(
+                {
+                    .x = menu.x + menuPadding,
+                    .y = y,
+                    .width = menu.width - menuPadding * 2.0f,
+                    .height = menuButtonHeight,
+                    .padding = 12.0f,
+                    .radius = 0.0f,
+                    .fontSize = 15.0f,
+                    .label = std::move(label),
+                    .labelColor = sidebarText,
+                    .hoverLabelColor = sidebarText,
+                    .pressedLabelColor = sidebarText,
+                    .hoverFill = primaryButtonHoverFill,
+                    .pressedFill = primaryButtonPressedFill,
+                    .hoverStroke = accent,
+                    .pressedStroke = accent,
+                    .onClick = std::move(onClick),
+                    .centerLabel = false,
+                },
+                {
+                    .fill = primaryButtonFill,
+                    .stroke = accent,
+                    .strokeWidth = 1.0f,
+                }));
+        };
+
+        firstModalPrimitiveId_ = primitives_.add(Primitive::quad(
+            {
+                .x = 0.0f,
+                .y = 0.0f,
+                .width = windowWidth,
+                .height = windowHeight,
+            },
+            {
+                .fill = dimOverlay,
+                .stroke = dimOverlay,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::roundedRect(
+            {
+                .x = menu.x,
+                .y = menu.y,
+                .width = menu.width,
+                .height = menu.height,
+                .radius = 0.0f,
+            },
+            {
+                .fill = menuBackground,
+                .stroke = accent,
+                .strokeWidth = 1.0f,
+            }));
+        primitives_.add(Primitive::text(
+            {
+                .x = menu.x + menuPadding,
+                .y = menu.y + 24.0f,
+                .fontSize = 19.0f,
+                .text = "Create Playlist",
+            },
+            {
+                .fill = sidebarText,
+                .stroke = sidebarText,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::button(
+            {
+                .x = menu.x + menu.width - menuPadding - closeButtonSize,
+                .y = menu.y + 16.0f,
+                .width = closeButtonSize,
+                .height = closeButtonSize,
+                .padding = (closeButtonSize - closeIconSize) * 0.5f,
+                .radius = 0.0f,
+                .iconSize = closeIconSize,
+                .label = "",
+                .iconSvg = closeIcon,
+                .iconColor = sidebarText,
+                .hoverFill = mantle,
+                .pressedFill = activeFill,
+                .hoverStroke = border,
+                .pressedStroke = accent,
+                .onClick = [this]() {
+                    closeCreatePlaylistMenu();
+                },
+            },
+            {
+                .fill = transparent,
+                .stroke = transparent,
+                .strokeWidth = 1.0f,
+            }));
+
+        float menuButtonY = menu.y + 64.0f;
+        addMenuButton("Import Playlist", menuButtonY, [this]() {
+            beginImportPlaylistFiles();
+        });
+        menuButtonY += menuButtonHeight + menuButtonGap;
+        addMenuButton("Create New Playlist", menuButtonY, [this]() {
+            createPlaylistMenuOpen_ = false;
+            createPlaylist();
+        });
+    }
 
     if (addSongsMenuOpen_) {
         constexpr float menuPadding = 20.0f;
@@ -2107,7 +2406,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 }));
         };
 
-        primitives_.add(Primitive::quad(
+        firstModalPrimitiveId_ = primitives_.add(Primitive::quad(
             {
                 .x = 0.0f,
                 .y = 0.0f,
@@ -2382,11 +2681,18 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                     }));
 
                 const float searchY = panel.y + 58.0f;
+                clampTextEditState(addSongsSearchEdit_, addSongsSearchQuery_);
+                const float addSongsSearchWidth = panel.width - menuPadding * 2.0f;
+                const float addSongsSearchScrollOffset = textFieldScrollOffset(
+                    addSongsSearchEdit_,
+                    addSongsSearchQuery_,
+                    addSongsSearchWidth - 20.0f,
+                    14.0f);
                 addSongsSearchFieldId_ = primitives_.add(Primitive::textField(
                     {
                         .x = panel.x + menuPadding,
                         .y = searchY,
-                        .width = panel.width - menuPadding * 2.0f,
+                        .width = addSongsSearchWidth,
                         .height = 36.0f,
                         .radius = 0.0f,
                         .padding = 10.0f,
@@ -2397,7 +2703,12 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                         .textColor = sidebarText,
                         .placeholderColor = menuSubtleText,
                         .caretColor = sidebarText,
-                        .caretCodepointIndex = addSongsSearchQuery_.size(),
+                        .selectionColor = accent,
+                        .selectedTextColor = listBackground,
+                        .caretCodepointIndex = addSongsSearchEdit_.caretIndex,
+                        .selectionStartCodepointIndex = std::min(addSongsSearchEdit_.caretIndex, addSongsSearchEdit_.selectionAnchor),
+                        .selectionEndCodepointIndex = std::max(addSongsSearchEdit_.caretIndex, addSongsSearchEdit_.selectionAnchor),
+                        .horizontalScrollOffset = addSongsSearchScrollOffset,
                         .focused = addSongsSearchFocused_,
                         .caretVisible = searchCaretVisible_,
                     },
@@ -2834,7 +3145,12 @@ std::vector<Primitive> App::renderPrimitives(VulkanRenderer::PrimitiveUpdate upd
                 .textColor = textField->textColor,
                 .placeholderColor = textField->placeholderColor,
                 .caretColor = textField->caretColor,
+                .selectionColor = textField->selectionColor,
+                .selectedTextColor = textField->selectedTextColor,
                 .caretCodepointIndex = textField->caretCodepointIndex,
+                .selectionStartCodepointIndex = textField->selectionStartCodepointIndex,
+                .selectionEndCodepointIndex = textField->selectionEndCodepointIndex,
+                .horizontalScrollOffset = textField->horizontalScrollOffset,
                 .focused = textField->focused,
                 .caretVisible = textField->caretVisible,
             };
@@ -2925,6 +3241,7 @@ void App::setPlaylistSearchQuery(std::string query)
     }
 
     playlistSearchQuery_ = std::move(query);
+    clampTextEditState(playlistSearchEdit_, playlistSearchQuery_);
     normalizedPlaylistSearchQuery_ = lowercaseAscii(playlistSearchQuery_);
     rebuildPlaylistTrackFilter();
 }
@@ -3302,6 +3619,7 @@ void App::resetAddSongsMenuState(bool clearPendingSongs)
     addSongsDirectoryOptionsVisible_ = false;
     addSongsPlaylistDropdownOpen_ = false;
     addSongsSearchFocused_ = false;
+    draggingSearchSelection_ = SearchField::None;
     searchCaretVisible_ = true;
     nextSearchCaretBlink_ = std::chrono::steady_clock::now() + searchCaretBlinkInterval;
     draggingPendingSongsScrollbar_ = false;
@@ -3312,6 +3630,7 @@ void App::resetAddSongsMenuState(bool clearPendingSongs)
         selectedAddSongsPlaylistIds_.clear();
         addSongsSearchQuery_.clear();
         normalizedAddSongsSearchQuery_.clear();
+        addSongsSearchEdit_ = {};
     } else {
         if (selectedAddSongsPlaylistIds_.empty() && selectedPlaylistId_ != 0) {
             selectedAddSongsPlaylistIds_.push_back(selectedPlaylistId_);
@@ -3327,6 +3646,7 @@ void App::setAddSongsSearchQuery(std::string query)
     }
 
     addSongsSearchQuery_ = std::move(query);
+    clampTextEditState(addSongsSearchEdit_, addSongsSearchQuery_);
     rebuildPendingSongFilter();
 }
 
@@ -3398,7 +3718,7 @@ void App::updateSearchCaretBlink()
     PrimitiveId activeSearchFieldId = 0;
     if (addSongsMenuOpen_ && addSongsSearchFocused_ && !addSongsAudioScanActive_) {
         activeSearchFieldId = addSongsSearchFieldId_;
-    } else if (!addSongsMenuOpen_ && playlistSearchFocused_) {
+    } else if (!anyModalOpen() && playlistSearchFocused_) {
         activeSearchFieldId = playlistSearchFieldId_;
     }
     if (activeSearchFieldId == 0) {
@@ -3429,7 +3749,7 @@ std::int32_t App::eventPollTimeoutMilliseconds(bool needsDraw) const
         return 0;
     }
     const bool searchFieldFocused = (addSongsMenuOpen_ && addSongsSearchFocused_)
-        || (!addSongsMenuOpen_ && playlistSearchFocused_);
+        || (!anyModalOpen() && playlistSearchFocused_);
     if (!searchFieldFocused) {
         return -1;
     }
@@ -3500,6 +3820,7 @@ void App::refreshAudioScanProgress()
 
 void App::toggleAddSongsMenu()
 {
+    createPlaylistMenuOpen_ = false;
     addSongsMenuOpen_ = !addSongsMenuOpen_;
     if (!addSongsMenuOpen_) {
         resetAddSongsMenuState(true);
@@ -3507,6 +3828,108 @@ void App::toggleAddSongsMenu()
         playlistSearchFocused_ = false;
         resetAddSongsMenuState(false);
     }
+    rebuildScene();
+}
+
+void App::toggleCreatePlaylistMenu()
+{
+    createPlaylistMenuOpen_ = !createPlaylistMenuOpen_;
+    if (createPlaylistMenuOpen_) {
+        addSongsMenuOpen_ = false;
+        resetAddSongsMenuState(true);
+        playlistSearchFocused_ = false;
+        draggingSearchSelection_ = SearchField::None;
+    }
+    rebuildScene();
+}
+
+void App::closeCreatePlaylistMenu()
+{
+    if (!createPlaylistMenuOpen_) {
+        return;
+    }
+
+    createPlaylistMenuOpen_ = false;
+    rebuildScene();
+}
+
+void App::beginImportPlaylistFiles()
+{
+    std::vector<std::filesystem::path> paths = runPlaylistImportDialog(lastImportDirectory_);
+    if (paths.empty()) {
+        return;
+    }
+
+    updateLastImportDirectory(paths);
+    importPlaylistFiles(paths);
+}
+
+void App::importPlaylistFiles(const std::vector<std::filesystem::path>& paths)
+{
+    std::vector<ParsedPlaylistFile> parsedPlaylists;
+    parsedPlaylists.reserve(paths.size());
+    for (const std::filesystem::path& path : paths) {
+        std::error_code error;
+        const std::filesystem::path normalizedPath = std::filesystem::absolute(path, error).lexically_normal();
+        if (error) {
+            continue;
+        }
+        ParsedPlaylistFile playlist;
+        if (parsePlaylistFile(normalizedPath, playlist)) {
+            parsedPlaylists.push_back(std::move(playlist));
+        }
+    }
+
+    bool importedTrackEntry = false;
+    for (ParsedPlaylistFile& parsed : parsedPlaylists) {
+        const PlaylistId playlistId = nextPlaylistId_++;
+        playlists_.push_back({
+            .id = playlistId,
+            .name = std::move(parsed.name),
+            .createdAt = std::chrono::system_clock::now(),
+        });
+        Playlist& playlist = playlists_.back();
+        playlist.trackIndexes.reserve(parsed.tracks.size());
+        playlist.trackIndexSet.reserve(parsed.tracks.size());
+
+        for (const std::filesystem::path& path : parsed.tracks) {
+            const auto existingTrack = trackIndexesByPath_.find(path);
+            std::size_t trackIndex = 0;
+            if (existingTrack != trackIndexesByPath_.end()) {
+                trackIndex = existingTrack->second;
+            } else {
+                trackIndex = tracks_.size();
+                trackIndexesByPath_.emplace(path, trackIndex);
+                tracks_.push_back({
+                    .path = path,
+                    .title = displayNameForPath(path),
+                });
+            }
+            if (playlist.trackIndexSet.insert(trackIndex).second) {
+                playlist.trackIndexes.push_back(trackIndex);
+                importedTrackEntry = true;
+            }
+        }
+    }
+
+    if (!parsedPlaylists.empty()) {
+        selectedPlaylistId_ = playlists_.back().id;
+        sidebarPlaylistFirstVisibleRow_ = playlists_.size() - 1;
+        playlistSearchQuery_.clear();
+        normalizedPlaylistSearchQuery_.clear();
+        filteredPlaylistTrackIndexes_.clear();
+        playlistFirstVisibleRow_ = 0;
+        hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
+        if (importedTrackEntry) {
+            hasCurrentSong_ = true;
+            currentSongElapsedSeconds_ = 0.0f;
+            if (currentSongDurationSeconds_ <= 0.0f) {
+                currentSongDurationSeconds_ = 180.0f;
+            }
+        }
+    }
+
+    createPlaylistMenuOpen_ = false;
     rebuildScene();
 }
 
@@ -3836,6 +4259,29 @@ bool App::addSongsMenuContains(float x, float y) const
         && y <= panel.y + panel.height;
 }
 
+bool App::anyModalOpen() const
+{
+    return createPlaylistMenuOpen_ || addSongsMenuOpen_;
+}
+
+bool App::activeModalContains(float x, float y) const
+{
+    if (createPlaylistMenuOpen_) {
+        return createPlaylistMenuContains(x, y);
+    }
+    return addSongsMenuOpen_ && addSongsMenuContains(x, y);
+}
+
+bool App::createPlaylistMenuContains(float x, float y) const
+{
+    return contains(
+        createPlaylistMenuRect(
+            static_cast<float>(window_.width()),
+            static_cast<float>(window_.height())),
+        x,
+        y);
+}
+
 bool App::addSongsSearchFieldContains(float x, float y) const
 {
     if (!addSongsMenuOpen_ || addSongsAudioScanActive_) {
@@ -3867,7 +4313,7 @@ bool App::addSongsSearchFieldContains(float x, float y) const
 
 bool App::playlistSearchFieldContains(float x, float y) const
 {
-    if (addSongsMenuOpen_) {
+    if (anyModalOpen()) {
         return false;
     }
 
@@ -3959,6 +4405,51 @@ bool App::canSeekMediaProgress() const
     return hasCurrentSong_ && playing_ && currentSongDurationSeconds_ > 0.0f;
 }
 
+void App::clampTextEditState(TextEditState& state, const std::string& text) const
+{
+    state.caretIndex = std::min(state.caretIndex, text.size());
+    state.selectionAnchor = std::min(state.selectionAnchor, text.size());
+}
+
+float App::textFieldScrollOffset(
+    TextEditState& state,
+    const std::string& text,
+    float contentWidth,
+    float fontSize) const
+{
+    if (contentWidth <= 0.0f || text.empty()) {
+        state.horizontalScrollOffset = 0.0f;
+        return 0.0f;
+    }
+
+    const std::size_t caretIndex = std::min(state.caretIndex, text.size());
+    const float caretX = renderer_.measureTextVisualWidth(text.substr(0, caretIndex), {}, fontSize);
+    const float textWidth = renderer_.measureTextVisualWidth(text, {}, fontSize);
+    const float visibleWidth = std::max(0.0f, contentWidth - 1.0f);
+    const float maxScrollOffset = std::max(0.0f, textWidth - visibleWidth);
+    state.horizontalScrollOffset = std::clamp(state.horizontalScrollOffset, 0.0f, maxScrollOffset);
+    if (caretX < state.horizontalScrollOffset) {
+        state.horizontalScrollOffset = caretX;
+    } else if (caretX > state.horizontalScrollOffset + visibleWidth) {
+        state.horizontalScrollOffset = caretX - visibleWidth;
+    }
+    return state.horizontalScrollOffset;
+}
+
+std::size_t App::textFieldCaretIndexAtX(const TextFieldPrimitive& field, const std::string& text, float x) const
+{
+    const float targetX = std::max(0.0f, x - field.x - field.padding + field.horizontalScrollOffset);
+    float previousX = 0.0f;
+    for (std::size_t index = 1; index <= text.size(); ++index) {
+        const float currentX = renderer_.measureTextVisualWidth(text.substr(0, index), field.fontFamilies, field.fontSize);
+        if (targetX < (previousX + currentX) * 0.5f) {
+            return index - 1;
+        }
+        previousX = currentX;
+    }
+    return text.size();
+}
+
 void App::refreshVolumeControl()
 {
     const bool effectivelyMuted = volumeMuted_ || volume_ <= 0.0f;
@@ -4040,6 +4531,7 @@ void App::refreshMediaProgressControl()
 void App::rebuildScene()
 {
     primitives_.clear();
+    firstModalPrimitiveId_ = 0;
     playlistTrackRows_.clear();
     draggingPlaylistScrollbar_ = false;
     playlistScrollbarTrackId_ = 0;
@@ -4059,6 +4551,76 @@ void App::rebuildScene()
 void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
 {
     if (addSongsAudioScanActive_) {
+        window_.setCursor(WaylandWindow::CursorShape::Default);
+        return;
+    }
+
+    const bool hoveringAddSongsSearchField = event.type != WaylandWindow::PointerEventType::Leave
+        && addSongsSearchFieldContains(event.x, event.y);
+    const bool hoveringPlaylistSearchField = event.type != WaylandWindow::PointerEventType::Leave
+        && playlistSearchFieldContains(event.x, event.y);
+    const bool hoveringTextField = hoveringAddSongsSearchField || hoveringPlaylistSearchField;
+
+    const auto updateDraggedSearchSelection = [&](SearchField field) {
+        const PrimitiveId primitiveId = field == SearchField::AddSongs
+            ? addSongsSearchFieldId_
+            : playlistSearchFieldId_;
+        const std::string& query = field == SearchField::AddSongs
+            ? addSongsSearchQuery_
+            : playlistSearchQuery_;
+        TextEditState& edit = field == SearchField::AddSongs
+            ? addSongsSearchEdit_
+            : playlistSearchEdit_;
+        const Primitive* primitive = primitives_.find(primitiveId);
+        const auto* textField = primitive == nullptr
+            ? nullptr
+            : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+        if (textField != nullptr) {
+            edit.caretIndex = textFieldCaretIndexAtX(*textField, query, event.x);
+        }
+    };
+
+    if (draggingSearchSelection_ != SearchField::None) {
+        if (event.type == WaylandWindow::PointerEventType::Move
+            || event.type == WaylandWindow::PointerEventType::ButtonRelease) {
+            updateDraggedSearchSelection(draggingSearchSelection_);
+            resetSearchCaretBlink();
+            if (event.type == WaylandWindow::PointerEventType::ButtonRelease) {
+                draggingSearchSelection_ = SearchField::None;
+            }
+            rebuildScene();
+            window_.setCursor(hoveringTextField ? WaylandWindow::CursorShape::Text : WaylandWindow::CursorShape::Default);
+            return;
+        }
+        if (event.type == WaylandWindow::PointerEventType::Leave) {
+            draggingSearchSelection_ = SearchField::None;
+        }
+    }
+
+    if (event.type == WaylandWindow::PointerEventType::ButtonPress && hoveringTextField) {
+        const SearchField field = hoveringAddSongsSearchField ? SearchField::AddSongs : SearchField::Playlist;
+        addSongsSearchFocused_ = field == SearchField::AddSongs;
+        playlistSearchFocused_ = field == SearchField::Playlist;
+        TextEditState& edit = field == SearchField::AddSongs
+            ? addSongsSearchEdit_
+            : playlistSearchEdit_;
+        updateDraggedSearchSelection(field);
+        edit.selectionAnchor = edit.caretIndex;
+        draggingSearchSelection_ = field;
+        resetSearchCaretBlink();
+        rebuildScene();
+        window_.setCursor(WaylandWindow::CursorShape::Text);
+        return;
+    }
+
+    if (anyModalOpen()
+        && event.type == WaylandWindow::PointerEventType::ButtonPress
+        && !activeModalContains(event.x, event.y)) {
+        if (createPlaylistMenuOpen_) {
+            closeCreatePlaylistMenu();
+        } else {
+            closeAddSongsMenu();
+        }
         window_.setCursor(WaylandWindow::CursorShape::Default);
         return;
     }
@@ -4158,12 +4720,6 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         return;
     }
 
-    if (addSongsMenuOpen_ && event.type == WaylandWindow::PointerEventType::ButtonPress && !addSongsMenuContains(event.x, event.y)) {
-        closeAddSongsMenu();
-        window_.setCursor(WaylandWindow::CursorShape::Default);
-        return;
-    }
-
     if (addSongsMenuOpen_ && event.type == WaylandWindow::PointerEventType::ButtonPress) {
         const bool searchFocused = addSongsSearchFieldContains(event.x, event.y);
         if (addSongsSearchFocused_ != searchFocused) {
@@ -4223,7 +4779,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         }
     }
 
-    const bool hoveringSidebarPlaylistScrollbar = !addSongsMenuOpen_
+    const bool hoveringSidebarPlaylistScrollbar = !anyModalOpen()
         && sidebarPlaylistScrollbarVisible
         && event.type != WaylandWindow::PointerEventType::Leave
         && contains(sidebarPlaylistScrollbarHitTarget, event.x, event.y);
@@ -4237,7 +4793,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         return;
     }
 
-    if (!addSongsMenuOpen_
+    if (!anyModalOpen()
         && event.type == WaylandWindow::PointerEventType::Scroll
         && event.scrollY != 0.0f
         && sidebarPlaylistScrollbarVisible
@@ -4250,7 +4806,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         return;
     }
 
-    if (!addSongsMenuOpen_ && event.type == WaylandWindow::PointerEventType::ButtonPress) {
+    if (!anyModalOpen() && event.type == WaylandWindow::PointerEventType::ButtonPress) {
         const bool searchFocused = playlistSearchFieldContains(event.x, event.y);
         if (playlistSearchFocused_ != searchFocused) {
             playlistSearchFocused_ = searchFocused;
@@ -4314,7 +4870,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         }
     }
 
-    const bool hoveringPlaylistScrollbar = !addSongsMenuOpen_
+    const bool hoveringPlaylistScrollbar = !anyModalOpen()
         && playlistScrollbarVisible
         && event.type != WaylandWindow::PointerEventType::Leave
         && contains(playlistScrollbarHitTarget, event.x, event.y);
@@ -4328,7 +4884,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         return;
     }
 
-    if (!addSongsMenuOpen_
+    if (!anyModalOpen()
         && event.type == WaylandWindow::PointerEventType::Scroll
         && event.scrollY != 0.0f
         && playlistTrackViewportContains(event.x, event.y)) {
@@ -4341,7 +4897,7 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
     }
 
     std::size_t hoveredPlaylistSlot = static_cast<std::size_t>(-1);
-    if (!addSongsMenuOpen_
+    if (!anyModalOpen()
         && event.type != WaylandWindow::PointerEventType::Leave
         && playlistTrackViewportContains(event.x, event.y)) {
         const float relativeY = event.y - playlistTrackViewportY_;
@@ -4355,11 +4911,11 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         refreshPlaylistTrackRowHover(hoveredPlaylistSlot);
     }
 
-    const bool hoveringMediaProgressSlider = !addSongsMenuOpen_
+    const bool hoveringMediaProgressSlider = !anyModalOpen()
         && event.type != WaylandWindow::PointerEventType::Leave
         && canSeekMediaProgress()
         && mediaProgressSliderContains(event.x, event.y);
-    const bool hoveringVolumeSlider = !addSongsMenuOpen_
+    const bool hoveringVolumeSlider = !anyModalOpen()
         && event.type != WaylandWindow::PointerEventType::Leave
         && volumeSliderContains(event.x, event.y);
 
@@ -4434,12 +4990,11 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
             continue;
         }
 
-        const bool isModalButton = addSongsMenuContains(
-            button->x + button->width * 0.5f,
-            button->y + button->height * 0.5f);
+        const bool isModalButton = firstModalPrimitiveId_ != 0
+            && primitive.id >= firstModalPrimitiveId_;
         const bool canInteract = primitive.visible
             && button->enabled
-            && (!addSongsMenuOpen_ || isModalButton)
+            && (!anyModalOpen() || isModalButton)
             && pointerInsidePrimitiveClip(primitive);
         const bool isHovered = canInteract
             && event.type != WaylandWindow::PointerEventType::Leave
@@ -4474,7 +5029,12 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         pressedButton_ = 0;
     }
 
-    window_.setCursor(hasHoveredButton || hoveringPendingSongsScrollbar || hoveringSidebarPlaylistScrollbar || hoveringPlaylistScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider ? WaylandWindow::CursorShape::Pointer : WaylandWindow::CursorShape::Default);
+    window_.setCursor(
+        hoveringTextField
+            ? WaylandWindow::CursorShape::Text
+            : (hasHoveredButton || hoveringPendingSongsScrollbar || hoveringSidebarPlaylistScrollbar || hoveringPlaylistScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider
+                    ? WaylandWindow::CursorShape::Pointer
+                    : WaylandWindow::CursorShape::Default));
 
     if (changed) {
         refreshPrimitives();
@@ -4492,18 +5052,22 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
                         continue;
                     }
 
-                    const bool isModalButton = addSongsMenuContains(
-                        postClickButton->x + postClickButton->width * 0.5f,
-                        postClickButton->y + postClickButton->height * 0.5f);
+                    const bool isModalButton = firstModalPrimitiveId_ != 0
+                        && postClickPrimitive.id >= firstModalPrimitiveId_;
                     const bool canInteract = postClickPrimitive.visible
                         && postClickButton->enabled
-                        && (!addSongsMenuOpen_ || isModalButton)
+                        && (!anyModalOpen() || isModalButton)
                         && pointerInsidePrimitiveClip(postClickPrimitive);
                     postClickButton->hovered = canInteract && contains(*postClickButton, event.x, event.y);
                     hasPostClickHoveredButton = hasPostClickHoveredButton || postClickButton->hovered;
                 }
 
-                window_.setCursor(hasPostClickHoveredButton || hoveringPendingSongsScrollbar || hoveringSidebarPlaylistScrollbar || hoveringPlaylistScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider ? WaylandWindow::CursorShape::Pointer : WaylandWindow::CursorShape::Default);
+                window_.setCursor(
+                    hoveringTextField
+                        ? WaylandWindow::CursorShape::Text
+                        : (hasPostClickHoveredButton || hoveringPendingSongsScrollbar || hoveringSidebarPlaylistScrollbar || hoveringPlaylistScrollbar || hoveringMediaProgressSlider || hoveringVolumeSlider
+                                ? WaylandWindow::CursorShape::Pointer
+                                : WaylandWindow::CursorShape::Default));
                 refreshPrimitives();
             }
         }
@@ -4521,7 +5085,10 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
     }
 
     if (event.key == KEY_ESC) {
-        if (addSongsMenuOpen_) {
+        draggingSearchSelection_ = SearchField::None;
+        if (createPlaylistMenuOpen_) {
+            closeCreatePlaylistMenu();
+        } else if (addSongsMenuOpen_) {
             closeAddSongsMenu();
         } else if (playlistSearchFocused_) {
             playlistSearchFocused_ = false;
@@ -4536,33 +5103,109 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
 
     resetSearchCaretBlink();
 
-    if (event.key == KEY_BACKSPACE) {
-        if (addSongsSearchFocused_ && !addSongsSearchQuery_.empty()) {
-            std::string query = addSongsSearchQuery_;
-            query.pop_back();
-            setAddSongsSearchQuery(std::move(query));
-            rebuildScene();
-        } else if (playlistSearchFocused_ && !playlistSearchQuery_.empty()) {
-            std::string query = playlistSearchQuery_;
-            query.pop_back();
-            setPlaylistSearchQuery(std::move(query));
-            rebuildScene();
+    TextEditState& edit = addSongsSearchFocused_ ? addSongsSearchEdit_ : playlistSearchEdit_;
+    std::string query = addSongsSearchFocused_ ? addSongsSearchQuery_ : playlistSearchQuery_;
+    clampTextEditState(edit, query);
+
+    const auto commit = [&](bool textChanged) {
+        if (textChanged) {
+            if (addSongsSearchFocused_) {
+                setAddSongsSearchQuery(std::move(query));
+            } else {
+                setPlaylistSearchQuery(std::move(query));
+            }
+        }
+        rebuildScene();
+    };
+
+    const auto eraseSelection = [&]() {
+        const std::size_t start = std::min(edit.caretIndex, edit.selectionAnchor);
+        const std::size_t end = std::max(edit.caretIndex, edit.selectionAnchor);
+        if (start == end) {
+            return false;
+        }
+        query.erase(start, end - start);
+        edit.caretIndex = start;
+        edit.selectionAnchor = start;
+        return true;
+    };
+
+    if (event.control && event.key == KEY_A) {
+        edit.selectionAnchor = 0;
+        edit.caretIndex = query.size();
+        commit(false);
+        return;
+    }
+
+    if (event.key == KEY_LEFT || event.key == KEY_RIGHT || event.key == KEY_HOME || event.key == KEY_END) {
+        const bool hasSelection = edit.caretIndex != edit.selectionAnchor;
+        if (!event.shift && hasSelection && (event.key == KEY_LEFT || event.key == KEY_RIGHT)) {
+            edit.caretIndex = event.key == KEY_LEFT
+                ? std::min(edit.caretIndex, edit.selectionAnchor)
+                : std::max(edit.caretIndex, edit.selectionAnchor);
+        } else {
+            switch (event.key) {
+            case KEY_LEFT:
+                edit.caretIndex = event.control
+                    ? previousWordBoundary(query, edit.caretIndex)
+                    : (edit.caretIndex > 0 ? edit.caretIndex - 1 : 0);
+                break;
+            case KEY_RIGHT:
+                edit.caretIndex = event.control
+                    ? nextWordBoundary(query, edit.caretIndex)
+                    : std::min(query.size(), edit.caretIndex + 1);
+                break;
+            case KEY_HOME:
+                edit.caretIndex = 0;
+                break;
+            case KEY_END:
+                edit.caretIndex = query.size();
+                break;
+            default:
+                break;
+            }
+        }
+        if (!event.shift) {
+            edit.selectionAnchor = edit.caretIndex;
+        }
+        commit(false);
+        return;
+    }
+
+    if (event.key == KEY_BACKSPACE || event.key == KEY_DELETE) {
+        if (eraseSelection()) {
+            commit(true);
+            return;
+        }
+
+        if (event.key == KEY_BACKSPACE && edit.caretIndex > 0) {
+            const std::size_t start = event.control
+                ? previousWordBoundary(query, edit.caretIndex)
+                : edit.caretIndex - 1;
+            query.erase(start, edit.caretIndex - start);
+            edit.caretIndex = start;
+            edit.selectionAnchor = start;
+            commit(true);
+        } else if (event.key == KEY_DELETE && edit.caretIndex < query.size()) {
+            const std::size_t end = event.control
+                ? nextWordBoundary(query, edit.caretIndex)
+                : edit.caretIndex + 1;
+            query.erase(edit.caretIndex, end - edit.caretIndex);
+            edit.selectionAnchor = edit.caretIndex;
+            commit(true);
         }
         return;
     }
 
-    const char character = characterForKey(event.key);
+    const char character = (!event.control && !event.alt)
+        ? characterForKey(event.key, event.shift)
+        : '\0';
     if (character != '\0') {
-        if (addSongsSearchFocused_) {
-            std::string query = addSongsSearchQuery_;
-            query.push_back(character);
-            setAddSongsSearchQuery(std::move(query));
-        } else {
-            std::string query = playlistSearchQuery_;
-            query.push_back(character);
-            setPlaylistSearchQuery(std::move(query));
-        }
-        rebuildScene();
+        eraseSelection();
+        query.insert(edit.caretIndex, 1, character);
+        ++edit.caretIndex;
+        edit.selectionAnchor = edit.caretIndex;
+        commit(true);
     }
 }
 
