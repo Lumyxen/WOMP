@@ -111,6 +111,7 @@ set_target_properties(womp_core PROPERTIES CXX_EXTENSIONS OFF)
 
 add_library(womp_scene
     src/scene/Primitive.cpp
+    src/scene/TextLayout.cpp
 )
 target_compile_features(womp_scene PUBLIC cxx_std_23)
 target_include_directories(womp_scene PUBLIC include)

@@ -19,6 +19,7 @@ public:
     void finish(bool naturalEos, bool userReplaced, Clock::time_point now);
     std::vector<StatisticDelta> takeDeltas(Clock::time_point now);
     bool active() const { return active_; }
+    std::int64_t pendingListenedMsFor(std::optional<PlaylistId> playlistId) const;
 
 private:
     void accountUntil(Clock::time_point now);

@@ -73,6 +73,11 @@ void PlaybackStats::finish(bool naturalEos, bool userReplaced, Clock::time_point
     actuallyPlaying_ = false;
 }
 
+std::int64_t PlaybackStats::pendingListenedMsFor(std::optional<PlaylistId> playlistId) const
+{
+    return !playlistId || playlistId_ == playlistId ? pendingListenedMs_ : 0;
+}
+
 std::vector<StatisticDelta> PlaybackStats::takeDeltas(Clock::time_point now)
 {
     accountUntil(now);

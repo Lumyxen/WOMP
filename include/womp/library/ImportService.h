@@ -39,7 +39,8 @@ private:
     };
 
     Metadata discover(const std::filesystem::path& path, _GstDiscoverer* discoverer) const;
-    std::optional<TrackId> copyAndHash(const std::filesystem::path& source) const;
+    std::optional<TrackId> hashFile(const std::filesystem::path& source) const;
+    bool ensureTrackFile(const std::filesystem::path& source, const TrackId& id) const;
     std::filesystem::path cacheArtwork(
         const TrackId& id,
         const std::filesystem::path& source,

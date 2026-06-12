@@ -41,6 +41,7 @@ private:
     struct Playlist {
         PlaylistId id = 0;
         std::string name;
+        std::string description;
         std::chrono::system_clock::time_point createdAt;
         std::int64_t position = 0;
         bool pinned = false;
@@ -81,10 +82,12 @@ private:
         Files,
     };
 
-    enum class SearchField {
+    enum class TextFieldTarget {
         None,
-        AddSongs,
-        Playlist,
+        AddSongsSearch,
+        PlaylistSearch,
+        PlaylistTitle,
+        PlaylistDescription,
     };
 
     struct TextEditState {
@@ -102,6 +105,9 @@ private:
     void closeCreatePlaylistMenu();
     void beginImportPlaylistFiles();
     void importPlaylistFiles(const std::vector<std::filesystem::path>& paths);
+    void exportPlaylist(PlaylistId id);
+    void beginPlaylistMetadataEdit(TextFieldTarget target);
+    void finishPlaylistMetadataEdit(bool save);
     void toggleAddSongsMenu();
     void closeAddSongsMenu();
     void beginImportFiles();
@@ -152,7 +158,6 @@ private:
     void handleKeyEvent(const WaylandWindow::KeyEvent& event);
     void clampTextEditState(TextEditState& state, const std::string& text) const;
     float textFieldScrollOffset(TextEditState& state, const std::string& text, float contentWidth, float fontSize) const;
-    std::size_t textFieldCaretIndexAtX(const TextFieldPrimitive& field, const std::string& text, float x) const;
     void refreshPrimitives(VulkanRenderer::PrimitiveUpdate update = VulkanRenderer::PrimitiveUpdate::DrawOnly);
     std::vector<Primitive> renderPrimitives(VulkanRenderer::PrimitiveUpdate update) const;
     bool anyModalOpen() const;
@@ -161,11 +166,15 @@ private:
     bool addSongsMenuContains(float x, float y) const;
     bool addSongsSearchFieldContains(float x, float y) const;
     bool playlistSearchFieldContains(float x, float y) const;
+    bool playlistTitleFieldContains(float x, float y) const;
+    bool playlistDescriptionFieldContains(float x, float y) const;
+    bool playlistMetadataFieldContains(PrimitiveId id, float x, float y) const;
     bool mediaProgressSliderContains(float x, float y) const;
     bool volumeSliderContains(float x, float y) const;
     bool canSeekMediaProgress() const;
     void refreshVolumeControl();
     void refreshMediaProgressControl();
+    void refreshListenedTime();
     void setPlaylistSearchQuery(std::string query);
     void rebuildPlaylistTrackFilter();
     const Track* displayedPlaylistTrack(std::size_t displayedIndex) const;
@@ -205,6 +214,7 @@ private:
     bool searchCaretVisible_ = true;
     bool addSongsAudioScanActive_ = false;
     bool audioImportActive_ = false;
+    bool playlistImportActive_ = false;
     std::chrono::steady_clock::time_point nextSearchCaretBlink_ = std::chrono::steady_clock::now();
     std::future<std::vector<PendingAudioFile>> pendingAudioScan_;
     std::future<ImportResult> pendingAudioImport_;
@@ -246,6 +256,11 @@ private:
     TextEditState playlistSearchEdit_;
     std::string playlistSearchQuery_;
     std::string normalizedPlaylistSearchQuery_;
+    TextFieldTarget playlistMetadataField_ = TextFieldTarget::None;
+    TextEditState playlistTitleEdit_;
+    TextEditState playlistDescriptionEdit_;
+    std::string playlistTitleDraft_;
+    std::string playlistDescriptionDraft_;
     std::vector<TrackId> filteredPlaylistTrackIndexes_;
     std::size_t playlistFirstVisibleRow_ = 0;
     std::size_t hoveredPlaylistTrackSlot_ = static_cast<std::size_t>(-1);
@@ -272,18 +287,21 @@ private:
     float mediaProgressSliderY_ = 0.0f;
     float mediaProgressSliderWidth_ = 0.0f;
     float mediaProgressSliderHeight_ = 4.0f;
-    float mediaProgressSliderHitHeight_ = 24.0f;
+    float mediaProgressSliderHitHeight_ = 12.0f;
     PrimitiveId mediaProgressSliderFillId_ = 0;
     PrimitiveId mediaProgressSliderKnobId_ = 0;
     PrimitiveId elapsedTimeTextId_ = 0;
     PrimitiveId totalTimeTextId_ = 0;
+    PrimitiveId listenedTimeTextId_ = 0;
+    std::size_t listenedTimeMaxCharacters_ = 0;
+    std::int64_t selectedPersistedListenedMs_ = 0;
     PrimitiveId shuffleButtonId_ = 0;
     PrimitiveId playPauseButtonId_ = 0;
     float volumeSliderX_ = 0.0f;
     float volumeSliderY_ = 0.0f;
     float volumeSliderWidth_ = 0.0f;
     float volumeSliderHeight_ = 4.0f;
-    float volumeSliderHitHeight_ = 24.0f;
+    float volumeSliderHitHeight_ = 12.0f;
     PrimitiveId volumeButtonId_ = 0;
     PrimitiveId volumeSliderFillId_ = 0;
     PrimitiveId volumeSliderKnobId_ = 0;
@@ -292,7 +310,9 @@ private:
     PrimitiveId audioScanProgressFillId_ = 0;
     PrimitiveId addSongsSearchFieldId_ = 0;
     PrimitiveId playlistSearchFieldId_ = 0;
-    SearchField draggingSearchSelection_ = SearchField::None;
+    PrimitiveId playlistTitleFieldId_ = 0;
+    PrimitiveId playlistDescriptionFieldId_ = 0;
+    TextFieldTarget draggingSearchSelection_ = TextFieldTarget::None;
     bool primitivesDirty_ = false;
     VulkanRenderer::PrimitiveUpdate pendingPrimitiveUpdate_ = VulkanRenderer::PrimitiveUpdate::Full;
     bool sceneReady_ = false;

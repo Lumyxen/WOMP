@@ -356,14 +356,10 @@ ImportService::Metadata ImportService::discover(
     return metadata;
 }
 
-std::optional<TrackId> ImportService::copyAndHash(const std::filesystem::path& source) const
+std::optional<TrackId> ImportService::hashFile(const std::filesystem::path& source) const
 {
-    gchar* uuid = g_uuid_string_random();
-    const std::filesystem::path temporary = store_.dataDirectory() / "tmp" / (std::string(uuid) + ".part");
-    g_free(uuid);
     std::ifstream input(source, std::ios::binary);
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    if (!input || !output) {
+    if (!input) {
         return std::nullopt;
     }
     GChecksum* checksum = g_checksum_new(G_CHECKSUM_SHA256);
@@ -372,35 +368,45 @@ std::optional<TrackId> ImportService::copyAndHash(const std::filesystem::path& s
         input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
         const std::streamsize count = input.gcount();
         if (count > 0) {
-            output.write(buffer.data(), count);
             g_checksum_update(checksum, reinterpret_cast<const guchar*>(buffer.data()), static_cast<gsize>(count));
         }
     }
-    output.close();
-    if (!input.eof() || !output) {
+    if (!input.eof()) {
         g_checksum_free(checksum);
-        std::filesystem::remove(temporary);
         return std::nullopt;
     }
     TrackId id = g_checksum_get_string(checksum);
     g_checksum_free(checksum);
+    return id;
+}
+
+bool ImportService::ensureTrackFile(const std::filesystem::path& source, const TrackId& id) const
+{
     const std::filesystem::path destination = store_.dataDirectory() / "tracks" / id;
     std::error_code error;
     if (std::filesystem::exists(destination, error)) {
-        std::filesystem::remove(temporary, error);
-    } else {
-        std::filesystem::rename(temporary, destination, error);
-        if (error) {
-            error.clear();
-            if (std::filesystem::exists(destination, error)) {
-                std::filesystem::remove(temporary, error);
-                return id;
-            }
-            std::filesystem::remove(temporary);
-            return std::nullopt;
-        }
+        return true;
     }
-    return id;
+
+    gchar* uuid = g_uuid_string_random();
+    const std::filesystem::path temporary = store_.dataDirectory() / "tmp" / (std::string(uuid) + ".part");
+    g_free(uuid);
+    std::filesystem::copy_file(source, temporary, std::filesystem::copy_options::overwrite_existing, error);
+    if (error) {
+        std::filesystem::remove(temporary);
+        return false;
+    }
+    std::filesystem::rename(temporary, destination, error);
+    if (error) {
+        error.clear();
+        if (std::filesystem::exists(destination, error)) {
+            std::filesystem::remove(temporary, error);
+            return true;
+        }
+        std::filesystem::remove(temporary);
+        return false;
+    }
+    return true;
 }
 
 std::filesystem::path ImportService::cacheArtwork(
@@ -466,27 +472,64 @@ ImportResult ImportService::importPaths(
     for (TrackId& id : store_.loadTrackIds()) {
         existingIds.insert(std::move(id));
     }
-    GError* discovererError = nullptr;
-    GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &discovererError);
-    g_clear_error(&discovererError);
+    GstDiscoverer* discoverer = nullptr;
+    const std::filesystem::path tracksDirectory =
+        std::filesystem::absolute(store_.dataDirectory() / "tracks").lexically_normal();
+    const auto addMemberships = [&](const TrackId& id) {
+        result.trackIds.push_back(id);
+        for (PlaylistId playlistId : playlistIds) {
+            memberships.emplace_back(playlistId, id);
+        }
+    };
     for (const std::filesystem::path& path : paths) {
         std::error_code error;
         if (!std::filesystem::is_regular_file(path, error)) {
             ++result.failed;
             continue;
         }
+
+        std::optional<TrackId> id;
+        const std::filesystem::path absolutePath = std::filesystem::absolute(path, error).lexically_normal();
+        if (!error
+            && absolutePath.parent_path() == tracksDirectory
+            && existingIds.contains(absolutePath.filename().string())) {
+            id = absolutePath.filename().string();
+        } else {
+            id = hashFile(path);
+        }
+        if (!id) {
+            ++result.failed;
+            continue;
+        }
+
+        const bool duplicate = existingIds.contains(*id) || batchIds.contains(*id);
+        if (duplicate) {
+            if (!ensureTrackFile(path, *id)) {
+                ++result.failed;
+                continue;
+            }
+            ++result.duplicates;
+            addMemberships(*id);
+            continue;
+        }
+
+        if (discoverer == nullptr) {
+            GError* discovererError = nullptr;
+            discoverer = gst_discoverer_new(10 * GST_SECOND, &discovererError);
+            g_clear_error(&discovererError);
+        }
         Metadata metadata = discover(path, discoverer);
         if (!metadata.playable) {
             ++result.unsupported;
             continue;
         }
-        const auto id = copyAndHash(path);
-        if (!id) {
+        if (!ensureTrackFile(path, *id)) {
             ++result.failed;
             continue;
         }
-        const bool duplicate = existingIds.contains(*id) || !batchIds.insert(*id).second;
-        duplicate ? ++result.duplicates : ++result.imported;
+
+        batchIds.insert(*id);
+        ++result.imported;
         std::filesystem::path artworkRelativePath;
         if (metadata.artwork.empty()) {
             const std::string directory = path.parent_path().lexically_normal().string();
@@ -510,10 +553,7 @@ ImportResult ImportService::importPaths(
             .addedAtMs = unixTimeMs(),
         };
         records.push_back(std::move(track));
-        result.trackIds.push_back(*id);
-        for (PlaylistId playlistId : playlistIds) {
-            memberships.emplace_back(playlistId, *id);
-        }
+        addMemberships(*id);
     }
     if (discoverer != nullptr) {
         g_object_unref(discoverer);

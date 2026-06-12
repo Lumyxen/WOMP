@@ -159,6 +159,9 @@ constexpr float playlistTrackFileTypeBadgeTextYInset =
 constexpr float floatingMenuMargin = 16.0f;
 constexpr char zenityPathSeparator = '\x1f';
 constexpr std::chrono::milliseconds searchCaretBlinkInterval{500};
+constexpr std::size_t playlistTitleCharacterLimit = 18;
+constexpr std::size_t playlistDescriptionCharacterLimit = 120;
+constexpr std::size_t playlistDescriptionLineLimit = 3;
 
 struct Rect {
     float x = 0.0f;
@@ -822,6 +825,53 @@ std::vector<std::filesystem::path> runPlaylistImportDialog(const std::filesystem
     return parseZenityPaths(output);
 }
 
+std::filesystem::path runPlaylistExportDialog(
+    const std::filesystem::path& initialDirectory,
+    std::string playlistName)
+{
+    std::ranges::transform(playlistName, playlistName.begin(), [](unsigned char character) {
+        return character == '/' || character == '\\' || std::iscntrl(character) != 0
+            ? '_'
+            : static_cast<char>(character);
+    });
+    if (playlistName.empty()) {
+        playlistName = "playlist";
+    }
+
+    const std::filesystem::path suggestedPath = initialDirectory / (playlistName + ".m3u8");
+    const std::string command = std::string{"zenity --file-selection --save --confirm-overwrite "}
+        + "--title='Export playlist' "
+          "--file-filter='M3U playlists | *.m3u *.m3u8' "
+        + "--filename=" + shellQuote(suggestedPath.string())
+        + " 2>/dev/null";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+        return {};
+    }
+
+    std::string output;
+    std::array<char, 4096> buffer{};
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        output += buffer.data();
+    }
+    if (pclose(pipe) != 0) {
+        return {};
+    }
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
+        output.pop_back();
+    }
+    if (output.empty()) {
+        return {};
+    }
+
+    std::filesystem::path path{output};
+    const std::string extension = lowercaseAscii(path.extension().string());
+    if (extension != ".m3u" && extension != ".m3u8") {
+        path += ".m3u8";
+    }
+    return path;
+}
+
 std::string displayNameForPath(const std::filesystem::path& path);
 
 std::vector<std::filesystem::path> audioFilesInDirectory(const std::filesystem::path& directory)
@@ -1237,7 +1287,6 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string playlistIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-music-icon lucide-list-music"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M11 19H3"/><path d="M21 16V5"/><circle cx="18" cy="16" r="3"/></svg>)";
     const std::string pinIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin-icon lucide-pin"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>)";
     const std::string pinOffIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin-off-icon lucide-pin-off"><path d="M12 17v5"/><path d="M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89"/><path d="m2 2 20 20"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11"/></svg>)";
-    const std::string renameIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>)";
     const std::string exportIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload-icon lucide-upload"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>)";
     const std::string deleteIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>)";
     const std::string shuffleIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shuffle-icon lucide-shuffle"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"/><path d="M2 6h1.972a4 4 0 0 1 3.6 2.2"/><path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45"/></svg>)";
@@ -1498,12 +1547,12 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     volumeSliderY_ = volumeY + (volumeButtonSize - volumeSliderHeight) * 0.5f;
     volumeSliderWidth_ = volumeSliderWidth;
     volumeSliderHeight_ = volumeSliderHeight;
-    volumeSliderHitHeight_ = volumeButtonSize;
+    volumeSliderHitHeight_ = volumeSliderKnobRadius * 2.0f;
     mediaProgressSliderX_ = transportBarX;
     mediaProgressSliderY_ = transportBarY;
     mediaProgressSliderWidth_ = transportBarWidth;
     mediaProgressSliderHeight_ = transportBarThickness;
-    mediaProgressSliderHitHeight_ = volumeButtonSize;
+    mediaProgressSliderHitHeight_ = transportBarKnobRadius * 2.0f;
     addShuffleButton(transportX - shuffleButtonSize - transportButtonGap, transportY + (transportButtonSize - shuffleButtonSize) * 0.5f);
     addTransportButton(backwardIcon, transportX, transportY, [this] { playPrevious(); });
     playPauseButtonId_ = addTransportButton(playing_ ? pauseIcon : playIcon, transportX + transportButtonSize + transportButtonGap, transportY, [this]() {
@@ -1628,6 +1677,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     constexpr float headerActionGap = 8.0f;
     constexpr float preferredHeaderActionSize = 38.0f;
     constexpr float minimumHeaderActionSize = 20.0f;
+    constexpr float maximumHeaderDescriptionWidth = 360.0f;
     constexpr float headerIconTileSize = 116.0f;
     constexpr float headerStatsTop = headerPadding + headerIconTileSize + 12.0f;
     constexpr float headerStatHeight = 48.0f;
@@ -1637,19 +1687,24 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const std::string groupedSongCount = formatGroupedNumber(playlistSongCount, numberGroupingSeparator_);
     const std::string playlistDescription = allSongsSelected
         ? "Every song in your library."
-        : "No description for this playlist.";
+        : selectedPlaylist->description;
     const PlaylistSummary selectedSummary = libraryStore_.summary(
         allSongsSelected ? std::nullopt : std::optional<PlaylistId>{selectedPlaylistId_});
+    selectedPersistedListenedMs_ = selectedSummary.listenedMs;
+    const std::optional<PlaylistId> selectedPlaylistScope = allSongsSelected
+        ? std::nullopt
+        : std::optional<PlaylistId>{selectedPlaylistId_};
     std::vector<std::pair<std::string_view, std::string>> playlistStats{
         {"SONGS", groupedSongCount},
         {"TOTAL TIME", formatSummaryDuration(selectedSummary.totalDurationMs)},
-        {"LISTENED", formatSummaryDuration(selectedSummary.listenedMs)},
+        {"LISTENED", formatSummaryDuration(
+            selectedPersistedListenedMs_ + playbackStats_.pendingListenedMsFor(selectedPlaylistScope))},
         {"LAST PLAYED", formatLastPlayed(selectedSummary.lastPlayedAtMs)},
     };
     if (!allSongsSelected) {
         playlistStats.emplace_back("TIME CREATED", formatPlaylistCreationTime(selectedPlaylist->createdAt));
     }
-    const std::size_t headerActionCount = allSongsSelected ? 1 : 5;
+    const std::size_t headerActionCount = allSongsSelected ? 1 : 4;
     const float responsiveIconTileSize = std::min(
         headerIconTileSize,
         std::max(72.0f, contentWidth * 0.2f));
@@ -1682,6 +1737,11 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
         headerTextX,
         contentX + contentWidth - headerPadding - headerActionsWidth);
     const float headerActionsY = contentY + headerPadding + headerIconTileSize - headerActionSize;
+    const float headerDescriptionWidth = allSongsSelected
+        ? headerTextWidth
+        : std::min(
+              maximumHeaderDescriptionWidth,
+              std::max(0.0f, headerActionsX - headerTextX - headerGap));
 
     primitives_.add(Primitive::roundedRect(
         {
@@ -1733,30 +1793,98 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
             .stroke = iconGrey,
             .strokeWidth = 0.0f,
         }));
-    primitives_.add(Primitive::text(
-        {
-            .x = headerTextX,
-            .y = contentY + 42.0f,
-            .fontSize = 25.0f,
-            .text = truncateText(selectedPlaylistName, maxHeaderTitleCharacters),
-        },
-        {
-            .fill = sidebarText,
-            .stroke = sidebarText,
-            .strokeWidth = 0.0f,
-        }));
-    primitives_.add(Primitive::text(
-        {
-            .x = headerTextX,
-            .y = contentY + 78.0f,
-            .fontSize = 14.0f,
-            .text = truncateText(playlistDescription, maxHeaderDescriptionCharacters),
-        },
-        {
-            .fill = iconGrey,
-            .stroke = iconGrey,
-            .strokeWidth = 0.0f,
-        }));
+    if (allSongsSelected) {
+        primitives_.add(Primitive::text(
+            {
+                .x = headerTextX,
+                .y = contentY + 42.0f,
+                .fontSize = 25.0f,
+                .text = truncateText(selectedPlaylistName, maxHeaderTitleCharacters),
+            },
+            {
+                .fill = sidebarText,
+                .stroke = sidebarText,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::text(
+            {
+                .x = headerTextX,
+                .y = contentY + 78.0f,
+                .fontSize = 14.0f,
+                .text = truncateText(playlistDescription, maxHeaderDescriptionCharacters),
+            },
+            {
+                .fill = iconGrey,
+                .stroke = iconGrey,
+                .strokeWidth = 0.0f,
+            }));
+    } else {
+        const bool titleFocused = playlistMetadataField_ == TextFieldTarget::PlaylistTitle;
+        const bool descriptionFocused = playlistMetadataField_ == TextFieldTarget::PlaylistDescription;
+        const std::string& titleText = titleFocused ? playlistTitleDraft_ : selectedPlaylist->name;
+        const std::string& descriptionText = descriptionFocused
+            ? playlistDescriptionDraft_
+            : selectedPlaylist->description;
+        clampTextEditState(playlistTitleEdit_, titleText);
+        clampTextEditState(playlistDescriptionEdit_, descriptionText);
+
+        playlistTitleFieldId_ = primitives_.add(Primitive::textField(
+            {
+                .x = headerTextX,
+                .y = contentY + 42.0f,
+                .width = headerTextWidth,
+                .height = 32.0f,
+                .radius = 0.0f,
+                .padding = 0.0f,
+                .fontSize = 25.0f,
+                .caretWidth = 1.0f,
+                .text = titleText,
+                .textColor = sidebarText,
+                .caretColor = sidebarText,
+                .selectionColor = accent,
+                .selectedTextColor = mantle,
+                .caretCodepointIndex = playlistTitleEdit_.caretIndex,
+                .selectionStartCodepointIndex = std::min(playlistTitleEdit_.caretIndex, playlistTitleEdit_.selectionAnchor),
+                .selectionEndCodepointIndex = std::max(playlistTitleEdit_.caretIndex, playlistTitleEdit_.selectionAnchor),
+                .focused = titleFocused,
+                .caretVisible = searchCaretVisible_,
+            },
+            {
+                .fill = transparent,
+                .stroke = transparent,
+                .strokeWidth = 0.0f,
+            }));
+        playlistDescriptionFieldId_ = primitives_.add(Primitive::textField(
+            {
+                .x = headerTextX,
+                .y = contentY + 78.0f,
+                .width = headerDescriptionWidth,
+                .height = 54.0f,
+                .radius = 0.0f,
+                .padding = 0.0f,
+                .fontSize = 14.0f,
+                .caretWidth = 1.0f,
+                .text = descriptionText,
+                .placeholder = "No description for this playlist.",
+                .textColor = iconGrey,
+                .placeholderColor = iconGrey,
+                .caretColor = iconGrey,
+                .selectionColor = accent,
+                .selectedTextColor = mantle,
+                .caretCodepointIndex = playlistDescriptionEdit_.caretIndex,
+                .selectionStartCodepointIndex = std::min(playlistDescriptionEdit_.caretIndex, playlistDescriptionEdit_.selectionAnchor),
+                .selectionEndCodepointIndex = std::max(playlistDescriptionEdit_.caretIndex, playlistDescriptionEdit_.selectionAnchor),
+                .wrapMode = TextWrapMode::Word,
+                .maxVisibleLines = playlistDescriptionLineLimit,
+                .focused = descriptionFocused,
+                .caretVisible = searchCaretVisible_,
+            },
+            {
+                .fill = transparent,
+                .stroke = transparent,
+                .strokeWidth = 0.0f,
+            }));
+    }
     float headerActionX = headerActionsX;
     const auto addHeaderAction = [&](const std::string& icon, bool primary = false, bool danger = false, std::function<void()> onClick = {}) {
         addHeaderActionButton(icon, headerActionX, headerActionsY, headerActionSize, primary, danger, std::move(onClick));
@@ -1774,8 +1902,9 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 setPlaylistPinned(playlistId, !playlist->pinned);
             }
         });
-        addHeaderAction(renameIcon);
-        addHeaderAction(exportIcon);
+        addHeaderAction(exportIcon, false, false, [this, playlistId = selectedPlaylistId_]() {
+            exportPlaylist(playlistId);
+        });
     }
     addHeaderAction(selectedSourceIsCurrent() && playing_ ? pauseIcon : playIcon, true, false, [this] {
         if (selectedSourceIsCurrent()) {
@@ -1819,7 +1948,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 .stroke = iconGrey,
                 .strokeWidth = 0.0f,
             }));
-        primitives_.add(Primitive::text(
+        const PrimitiveId statValueId = primitives_.add(Primitive::text(
             {
                 .x = statX + 10.0f,
                 .y = statY + 22.0f,
@@ -1831,6 +1960,10 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 .stroke = statIndex == 0 ? accent : sidebarText,
                 .strokeWidth = 0.0f,
             }));
+        if (statIndex == 2) {
+            listenedTimeTextId_ = statValueId;
+            listenedTimeMaxCharacters_ = maxStatValueCharacters;
+        }
     }
 
     const float searchY = contentY + headerHeight + 18.0f;
@@ -3048,6 +3181,7 @@ void App::run()
         }
     }
 
+    finishPlaylistMetadataEdit(true);
     playbackStats_.finish(false, false, std::chrono::steady_clock::now());
     flushPlaybackStats();
     libraryStore_.setSetting("selected_playlist", std::to_string(selectedPlaylistId_));
@@ -3064,6 +3198,7 @@ PlaylistId App::addPlaylist(std::string name)
     playlists_.push_back({
         .id = id,
         .name = std::move(name),
+        .description = "",
         .createdAt = std::chrono::system_clock::now(),
         .position = maxPosition == playlists_.end() ? 0 : maxPosition->position + 1,
     });
@@ -3125,6 +3260,7 @@ void App::reloadLibrary()
         Playlist playlist{
             .id = record.id,
             .name = std::move(record.name),
+            .description = std::move(record.description),
             .createdAt = std::chrono::system_clock::time_point{std::chrono::milliseconds{record.createdAtMs}},
             .position = record.position,
             .pinned = record.pinned,
@@ -3215,6 +3351,8 @@ std::vector<Primitive> App::renderPrimitives(VulkanRenderer::PrimitiveUpdate upd
                 .selectionStartCodepointIndex = textField->selectionStartCodepointIndex,
                 .selectionEndCodepointIndex = textField->selectionEndCodepointIndex,
                 .horizontalScrollOffset = textField->horizontalScrollOffset,
+                .wrapMode = textField->wrapMode,
+                .maxVisibleLines = textField->maxVisibleLines,
                 .focused = textField->focused,
                 .caretVisible = textField->caretVisible,
             };
@@ -3262,6 +3400,7 @@ void App::selectPlaylist(PlaylistId id)
     }
 
     selectedPlaylistId_ = id;
+    playlistMetadataField_ = TextFieldTarget::None;
     libraryStore_.setSetting("selected_playlist", std::to_string(id));
     playlistSearchQuery_.clear();
     normalizedPlaylistSearchQuery_.clear();
@@ -3290,6 +3429,7 @@ void App::createPlaylist()
     playlists_.push_back({
         .id = selectedPlaylistId_,
         .name = std::move(name),
+        .description = "",
         .createdAt = std::chrono::system_clock::now(),
         .position = maxPosition == playlists_.end() ? 0 : maxPosition->position + 1,
     });
@@ -3762,7 +3902,7 @@ void App::resetAddSongsMenuState(bool clearPendingSongs)
     addSongsDirectoryOptionsVisible_ = false;
     addSongsPlaylistDropdownOpen_ = false;
     addSongsSearchFocused_ = false;
-    draggingSearchSelection_ = SearchField::None;
+    draggingSearchSelection_ = TextFieldTarget::None;
     searchCaretVisible_ = true;
     nextSearchCaretBlink_ = std::chrono::steady_clock::now() + searchCaretBlinkInterval;
     draggingPendingSongsScrollbar_ = false;
@@ -3846,7 +3986,11 @@ void App::resetSearchCaretBlink()
     searchCaretVisible_ = true;
     nextSearchCaretBlink_ = std::chrono::steady_clock::now() + searchCaretBlinkInterval;
 
-    for (const PrimitiveId searchFieldId : {addSongsSearchFieldId_, playlistSearchFieldId_}) {
+    for (const PrimitiveId searchFieldId : {
+             addSongsSearchFieldId_,
+             playlistSearchFieldId_,
+             playlistTitleFieldId_,
+             playlistDescriptionFieldId_}) {
         if (Primitive* primitive = primitives_.find(searchFieldId)) {
             if (auto* textField = std::get_if<TextFieldPrimitive>(&primitive->geometry); textField != nullptr && !textField->caretVisible) {
                 textField->caretVisible = true;
@@ -3863,6 +4007,10 @@ void App::updateSearchCaretBlink()
         activeSearchFieldId = addSongsSearchFieldId_;
     } else if (!anyModalOpen() && playlistSearchFocused_) {
         activeSearchFieldId = playlistSearchFieldId_;
+    } else if (!anyModalOpen() && playlistMetadataField_ == TextFieldTarget::PlaylistTitle) {
+        activeSearchFieldId = playlistTitleFieldId_;
+    } else if (!anyModalOpen() && playlistMetadataField_ == TextFieldTarget::PlaylistDescription) {
+        activeSearchFieldId = playlistDescriptionFieldId_;
     }
     if (activeSearchFieldId == 0) {
         return;
@@ -3895,7 +4043,7 @@ std::int32_t App::eventPollTimeoutMilliseconds(bool needsDraw) const
         return 100;
     }
     const bool searchFieldFocused = (addSongsMenuOpen_ && addSongsSearchFocused_)
-        || (!anyModalOpen() && playlistSearchFocused_);
+        || (!anyModalOpen() && (playlistSearchFocused_ || playlistMetadataField_ != TextFieldTarget::None));
     if (!searchFieldFocused) {
         return -1;
     }
@@ -3984,7 +4132,7 @@ void App::toggleCreatePlaylistMenu()
         addSongsMenuOpen_ = false;
         resetAddSongsMenuState(true);
         playlistSearchFocused_ = false;
-        draggingSearchSelection_ = SearchField::None;
+        draggingSearchSelection_ = TextFieldTarget::None;
     }
     rebuildScene();
 }
@@ -4015,20 +4163,127 @@ void App::beginImportPlaylistFiles()
 
 void App::importPlaylistFiles(const std::vector<std::filesystem::path>& paths)
 {
-    ImportResult combined;
+    if (paths.empty() || audioImportActive_) {
+        return;
+    }
+
+    std::vector<std::pair<std::filesystem::path, PlaylistId>> playlists;
+    playlists.reserve(paths.size());
     for (const std::filesystem::path& path : paths) {
         const PlaylistId playlistId = libraryStore_.createPlaylist(displayNameForPath(path));
-        const ImportResult result = importService_.importM3u(path, playlistId);
-        combined.imported += result.imported;
-        combined.duplicates += result.duplicates;
-        combined.unsupported += result.unsupported;
-        combined.failed += result.failed;
+        playlists.emplace_back(path, playlistId);
         selectedPlaylistId_ = playlistId;
     }
-    lastImportResultText_ = importResultText(combined);
-    reloadLibrary();
+
+    audioImportActive_ = true;
+    playlistImportActive_ = true;
     createPlaylistMenuOpen_ = false;
+    lastImportResultText_ = "Importing " + std::to_string(paths.size()) + " playlist"
+        + (paths.size() == 1 ? "..." : "s...");
+    pendingAudioImport_ = std::async(
+        std::launch::async,
+        [this, playlists = std::move(playlists)]() {
+            ImportResult combined;
+            for (const auto& [path, playlistId] : playlists) {
+                const ImportResult result = importService_.importM3u(path, playlistId);
+                combined.imported += result.imported;
+                combined.duplicates += result.duplicates;
+                combined.unsupported += result.unsupported;
+                combined.failed += result.failed;
+            }
+            return combined;
+        });
     rebuildScene();
+}
+
+void App::exportPlaylist(PlaylistId id)
+{
+    const auto playlist = std::ranges::find(playlists_, id, &Playlist::id);
+    if (playlist == playlists_.end()) {
+        return;
+    }
+
+    const std::filesystem::path path = runPlaylistExportDialog(lastImportDirectory_, playlist->name);
+    if (path.empty()) {
+        return;
+    }
+
+    if (!libraryStore_.exportPlaylistM3u(id, path)) {
+        const std::string command = "zenity --error --title='Export failed' --text="
+            + shellQuote("Could not export the playlist to " + path.string());
+        std::system(command.c_str());
+        return;
+    }
+
+    lastImportDirectory_ = path.parent_path();
+    libraryStore_.setSetting("last_import_directory", lastImportDirectory_.string());
+}
+
+void App::beginPlaylistMetadataEdit(TextFieldTarget target)
+{
+    if (target != TextFieldTarget::PlaylistTitle && target != TextFieldTarget::PlaylistDescription) {
+        return;
+    }
+    if (playlistMetadataField_ == target) {
+        return;
+    }
+    if (playlistMetadataField_ != TextFieldTarget::None) {
+        finishPlaylistMetadataEdit(true);
+    }
+
+    const auto playlist = std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id);
+    if (playlist == playlists_.end()) {
+        return;
+    }
+
+    playlistMetadataField_ = target;
+    playlistTitleDraft_ = playlist->name;
+    playlistDescriptionDraft_ = playlist->description;
+    playlistTitleEdit_ = {
+        .caretIndex = playlistTitleDraft_.size(),
+        .selectionAnchor = playlistTitleDraft_.size(),
+    };
+    playlistDescriptionEdit_ = {
+        .caretIndex = playlistDescriptionDraft_.size(),
+        .selectionAnchor = playlistDescriptionDraft_.size(),
+    };
+    addSongsSearchFocused_ = false;
+    playlistSearchFocused_ = false;
+    resetSearchCaretBlink();
+    rebuildScene();
+}
+
+void App::finishPlaylistMetadataEdit(bool save)
+{
+    if (playlistMetadataField_ == TextFieldTarget::None) {
+        return;
+    }
+
+    const auto playlist = std::ranges::find(playlists_, selectedPlaylistId_, &Playlist::id);
+    if (save && playlist != playlists_.end()) {
+        const bool hasVisibleTitle = std::ranges::any_of(playlistTitleDraft_, [](unsigned char character) {
+            return std::isspace(character) == 0;
+        });
+        if (!hasVisibleTitle) {
+            playlistTitleDraft_ = playlist->name;
+        }
+        if (libraryStore_.updatePlaylistMetadata(
+                playlist->id,
+                playlistTitleDraft_,
+                playlistDescriptionDraft_)) {
+            playlist->name = playlistTitleDraft_;
+            playlist->description = playlistDescriptionDraft_;
+        }
+    }
+
+    playlistMetadataField_ = TextFieldTarget::None;
+    playlistTitleDraft_.clear();
+    playlistDescriptionDraft_.clear();
+    playlistTitleEdit_ = {};
+    playlistDescriptionEdit_ = {};
+    if (sceneReady_) {
+        rebuildScene();
+    }
 }
 
 void App::closeAddSongsMenu()
@@ -4080,9 +4335,13 @@ void App::completePendingAudioImportIfReady()
         return;
     }
 
+    const bool importedPlaylists = playlistImportActive_;
     audioImportActive_ = false;
-    addSongsMenuOpen_ = true;
-    resetAddSongsMenuState(true);
+    playlistImportActive_ = false;
+    if (!importedPlaylists) {
+        addSongsMenuOpen_ = true;
+        resetAddSongsMenuState(true);
+    }
     try {
         const ImportResult result = pendingAudioImport_.get();
         lastImportResultText_ = importResultText(result);
@@ -4389,6 +4648,32 @@ bool App::playlistSearchFieldContains(float x, float y) const
     return searchField != nullptr && contains(*searchField, x, y);
 }
 
+bool App::playlistTitleFieldContains(float x, float y) const
+{
+    return playlistMetadataFieldContains(playlistTitleFieldId_, x, y);
+}
+
+bool App::playlistDescriptionFieldContains(float x, float y) const
+{
+    return playlistMetadataFieldContains(playlistDescriptionFieldId_, x, y);
+}
+
+bool App::playlistMetadataFieldContains(PrimitiveId id, float x, float y) const
+{
+    if (anyModalOpen()) {
+        return false;
+    }
+    const Primitive* primitive = primitives_.find(id);
+    const auto* field = primitive == nullptr
+        ? nullptr
+        : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+    if (field == nullptr) {
+        return false;
+    }
+
+    return contains(*field, x, y);
+}
+
 void App::togglePlayback()
 {
     if (!hasCurrentSong_) {
@@ -4649,6 +4934,7 @@ void App::pollPlayback()
     if (now >= nextStatsFlush_) {
         flushPlaybackStats();
     }
+    refreshListenedTime();
     for (const AudioPlayer::Event& event : audioPlayer_.pollEvents()) {
         if (event.type == AudioPlayer::EventType::Eos) {
             playbackStats_.finish(true, false, now);
@@ -4778,20 +5064,6 @@ float App::textFieldScrollOffset(
     return state.horizontalScrollOffset;
 }
 
-std::size_t App::textFieldCaretIndexAtX(const TextFieldPrimitive& field, const std::string& text, float x) const
-{
-    const float targetX = std::max(0.0f, x - field.x - field.padding + field.horizontalScrollOffset);
-    float previousX = 0.0f;
-    for (std::size_t index = 1; index <= text.size(); ++index) {
-        const float currentX = renderer_.measureTextVisualWidth(text.substr(0, index), field.fontFamilies, field.fontSize);
-        if (targetX < (previousX + currentX) * 0.5f) {
-            return index - 1;
-        }
-        previousX = currentX;
-    }
-    return text.size();
-}
-
 void App::refreshVolumeControl()
 {
     const bool effectivelyMuted = volumeMuted_ || volume_ <= 0.0f;
@@ -4888,6 +5160,27 @@ void App::refreshMediaProgressControl()
     }
 }
 
+void App::refreshListenedTime()
+{
+    Primitive* primitive = primitives_.find(listenedTimeTextId_);
+    auto* text = primitive == nullptr ? nullptr : std::get_if<TextPrimitive>(&primitive->geometry);
+    if (text == nullptr) {
+        return;
+    }
+
+    const std::optional<PlaylistId> selectedPlaylistScope = selectedPlaylistId_ == 0
+        ? std::nullopt
+        : std::optional<PlaylistId>{selectedPlaylistId_};
+    const std::string listenedTime = truncateText(
+        formatSummaryDuration(
+            selectedPersistedListenedMs_ + playbackStats_.pendingListenedMsFor(selectedPlaylistScope)),
+        listenedTimeMaxCharacters_);
+    if (text->text != listenedTime) {
+        text->text = listenedTime;
+        refreshPrimitives(VulkanRenderer::PrimitiveUpdate::Text);
+    }
+}
+
 void App::rebuildScene()
 {
     primitives_.clear();
@@ -4902,6 +5195,10 @@ void App::rebuildScene()
     audioScanProgressFillId_ = 0;
     addSongsSearchFieldId_ = 0;
     playlistSearchFieldId_ = 0;
+    playlistTitleFieldId_ = 0;
+    playlistDescriptionFieldId_ = 0;
+    listenedTimeTextId_ = 0;
+    listenedTimeMaxCharacters_ = 0;
     buildInitialScene(static_cast<float>(window_.width()), static_cast<float>(window_.height()));
     pressedButton_ = 0;
     sceneReady_ = true;
@@ -4924,58 +5221,103 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         && addSongsSearchFieldContains(event.x, event.y);
     const bool hoveringPlaylistSearchField = event.type != WaylandWindow::PointerEventType::Leave
         && playlistSearchFieldContains(event.x, event.y);
-    const bool hoveringTextField = hoveringAddSongsSearchField || hoveringPlaylistSearchField;
+    const bool hoveringPlaylistTitleField = event.type != WaylandWindow::PointerEventType::Leave
+        && playlistTitleFieldContains(event.x, event.y);
+    const bool hoveringPlaylistDescriptionField = event.type != WaylandWindow::PointerEventType::Leave
+        && playlistDescriptionFieldContains(event.x, event.y);
+    const bool hoveringTextField = hoveringAddSongsSearchField
+        || hoveringPlaylistSearchField
+        || hoveringPlaylistTitleField
+        || hoveringPlaylistDescriptionField;
 
-    const auto updateDraggedSearchSelection = [&](SearchField field) {
-        const PrimitiveId primitiveId = field == SearchField::AddSongs
-            ? addSongsSearchFieldId_
-            : playlistSearchFieldId_;
-        const std::string& query = field == SearchField::AddSongs
-            ? addSongsSearchQuery_
-            : playlistSearchQuery_;
-        TextEditState& edit = field == SearchField::AddSongs
-            ? addSongsSearchEdit_
-            : playlistSearchEdit_;
+    const auto updateDraggedSearchSelection = [&](TextFieldTarget field) {
+        PrimitiveId primitiveId = 0;
+        const std::string* query = nullptr;
+        TextEditState* edit = nullptr;
+        switch (field) {
+        case TextFieldTarget::AddSongsSearch:
+            primitiveId = addSongsSearchFieldId_;
+            query = &addSongsSearchQuery_;
+            edit = &addSongsSearchEdit_;
+            break;
+        case TextFieldTarget::PlaylistSearch:
+            primitiveId = playlistSearchFieldId_;
+            query = &playlistSearchQuery_;
+            edit = &playlistSearchEdit_;
+            break;
+        case TextFieldTarget::PlaylistTitle:
+            primitiveId = playlistTitleFieldId_;
+            query = &playlistTitleDraft_;
+            edit = &playlistTitleEdit_;
+            break;
+        case TextFieldTarget::PlaylistDescription:
+            primitiveId = playlistDescriptionFieldId_;
+            query = &playlistDescriptionDraft_;
+            edit = &playlistDescriptionEdit_;
+            break;
+        case TextFieldTarget::None:
+            return;
+        }
         const Primitive* primitive = primitives_.find(primitiveId);
         const auto* textField = primitive == nullptr
             ? nullptr
             : std::get_if<TextFieldPrimitive>(&primitive->geometry);
-        if (textField != nullptr) {
-            edit.caretIndex = textFieldCaretIndexAtX(*textField, query, event.x);
+        if (textField != nullptr && query != nullptr && edit != nullptr) {
+            edit->caretIndex = renderer_.textFieldCaretIndexAtPoint(*textField, event.x, event.y);
         }
     };
 
-    if (draggingSearchSelection_ != SearchField::None) {
+    if (draggingSearchSelection_ != TextFieldTarget::None) {
         if (event.type == WaylandWindow::PointerEventType::Move
             || event.type == WaylandWindow::PointerEventType::ButtonRelease) {
             updateDraggedSearchSelection(draggingSearchSelection_);
             resetSearchCaretBlink();
             if (event.type == WaylandWindow::PointerEventType::ButtonRelease) {
-                draggingSearchSelection_ = SearchField::None;
+                draggingSearchSelection_ = TextFieldTarget::None;
             }
             rebuildScene();
             window_.setCursor(hoveringTextField ? WaylandWindow::CursorShape::Text : WaylandWindow::CursorShape::Default);
             return;
         }
         if (event.type == WaylandWindow::PointerEventType::Leave) {
-            draggingSearchSelection_ = SearchField::None;
+            draggingSearchSelection_ = TextFieldTarget::None;
         }
     }
 
     if (event.type == WaylandWindow::PointerEventType::ButtonPress && hoveringTextField) {
-        const SearchField field = hoveringAddSongsSearchField ? SearchField::AddSongs : SearchField::Playlist;
-        addSongsSearchFocused_ = field == SearchField::AddSongs;
-        playlistSearchFocused_ = field == SearchField::Playlist;
-        TextEditState& edit = field == SearchField::AddSongs
-            ? addSongsSearchEdit_
-            : playlistSearchEdit_;
+        const TextFieldTarget field = hoveringAddSongsSearchField
+            ? TextFieldTarget::AddSongsSearch
+            : (hoveringPlaylistSearchField
+                    ? TextFieldTarget::PlaylistSearch
+                    : (hoveringPlaylistTitleField
+                            ? TextFieldTarget::PlaylistTitle
+                            : TextFieldTarget::PlaylistDescription));
+        if (field == TextFieldTarget::PlaylistTitle || field == TextFieldTarget::PlaylistDescription) {
+            beginPlaylistMetadataEdit(field);
+        } else {
+            finishPlaylistMetadataEdit(true);
+            addSongsSearchFocused_ = field == TextFieldTarget::AddSongsSearch;
+            playlistSearchFocused_ = field == TextFieldTarget::PlaylistSearch;
+        }
         updateDraggedSearchSelection(field);
+        TextEditState& edit = field == TextFieldTarget::AddSongsSearch
+            ? addSongsSearchEdit_
+            : (field == TextFieldTarget::PlaylistSearch
+                    ? playlistSearchEdit_
+                    : (field == TextFieldTarget::PlaylistTitle
+                            ? playlistTitleEdit_
+                            : playlistDescriptionEdit_));
         edit.selectionAnchor = edit.caretIndex;
         draggingSearchSelection_ = field;
         resetSearchCaretBlink();
         rebuildScene();
         window_.setCursor(WaylandWindow::CursorShape::Text);
         return;
+    }
+
+    if (event.type == WaylandWindow::PointerEventType::ButtonPress
+        && playlistMetadataField_ != TextFieldTarget::None) {
+        finishPlaylistMetadataEdit(true);
     }
 
     if (anyModalOpen()
@@ -5475,11 +5817,13 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
     }
 
     if (event.key == KEY_ESC) {
-        draggingSearchSelection_ = SearchField::None;
+        draggingSearchSelection_ = TextFieldTarget::None;
         if (createPlaylistMenuOpen_) {
             closeCreatePlaylistMenu();
         } else if (addSongsMenuOpen_) {
             closeAddSongsMenu();
+        } else if (playlistMetadataField_ != TextFieldTarget::None) {
+            finishPlaylistMetadataEdit(false);
         } else if (playlistSearchFocused_) {
             playlistSearchFocused_ = false;
             rebuildScene();
@@ -5487,76 +5831,169 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
         return;
     }
 
-    if (!addSongsSearchFocused_ && !playlistSearchFocused_) {
+    TextFieldTarget target = TextFieldTarget::None;
+    if (addSongsSearchFocused_) {
+        target = TextFieldTarget::AddSongsSearch;
+    } else if (playlistSearchFocused_) {
+        target = TextFieldTarget::PlaylistSearch;
+    } else if (playlistMetadataField_ != TextFieldTarget::None) {
+        target = playlistMetadataField_;
+    }
+    if (target == TextFieldTarget::None) {
         return;
     }
 
     resetSearchCaretBlink();
 
-    TextEditState& edit = addSongsSearchFocused_ ? addSongsSearchEdit_ : playlistSearchEdit_;
-    std::string query = addSongsSearchFocused_ ? addSongsSearchQuery_ : playlistSearchQuery_;
-    clampTextEditState(edit, query);
+    TextEditState* edit = target == TextFieldTarget::AddSongsSearch
+        ? &addSongsSearchEdit_
+        : (target == TextFieldTarget::PlaylistSearch
+                ? &playlistSearchEdit_
+                : (target == TextFieldTarget::PlaylistTitle
+                        ? &playlistTitleEdit_
+                        : &playlistDescriptionEdit_));
+    std::string query = target == TextFieldTarget::AddSongsSearch
+        ? addSongsSearchQuery_
+        : (target == TextFieldTarget::PlaylistSearch
+                ? playlistSearchQuery_
+                : (target == TextFieldTarget::PlaylistTitle
+                        ? playlistTitleDraft_
+                        : playlistDescriptionDraft_));
+    clampTextEditState(*edit, query);
 
     const auto commit = [&](bool textChanged) {
         if (textChanged) {
-            if (addSongsSearchFocused_) {
+            if (target == TextFieldTarget::AddSongsSearch) {
                 setAddSongsSearchQuery(std::move(query));
-            } else {
+            } else if (target == TextFieldTarget::PlaylistSearch) {
                 setPlaylistSearchQuery(std::move(query));
+            } else if (target == TextFieldTarget::PlaylistTitle) {
+                playlistTitleDraft_ = std::move(query);
+            } else {
+                playlistDescriptionDraft_ = std::move(query);
             }
         }
         rebuildScene();
     };
 
     const auto eraseSelection = [&]() {
-        const std::size_t start = std::min(edit.caretIndex, edit.selectionAnchor);
-        const std::size_t end = std::max(edit.caretIndex, edit.selectionAnchor);
+        const std::size_t start = std::min(edit->caretIndex, edit->selectionAnchor);
+        const std::size_t end = std::max(edit->caretIndex, edit->selectionAnchor);
         if (start == end) {
             return false;
         }
         query.erase(start, end - start);
-        edit.caretIndex = start;
-        edit.selectionAnchor = start;
+        edit->caretIndex = start;
+        edit->selectionAnchor = start;
         return true;
     };
 
+    const auto descriptionFits = [&](const std::string& candidate) {
+        const Primitive* primitive = primitives_.find(playlistDescriptionFieldId_);
+        const auto* field = primitive == nullptr
+            ? nullptr
+            : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+        return field == nullptr || renderer_.textFieldTextFits(*field, candidate);
+    };
+
     if (event.control && event.key == KEY_A) {
-        edit.selectionAnchor = 0;
-        edit.caretIndex = query.size();
+        edit->selectionAnchor = 0;
+        edit->caretIndex = query.size();
         commit(false);
         return;
     }
 
-    if (event.key == KEY_LEFT || event.key == KEY_RIGHT || event.key == KEY_HOME || event.key == KEY_END) {
-        const bool hasSelection = edit.caretIndex != edit.selectionAnchor;
+    if (event.key == KEY_ENTER || event.key == KEY_KPENTER) {
+        if (target == TextFieldTarget::PlaylistTitle
+            || (target == TextFieldTarget::PlaylistDescription && event.control)) {
+            finishPlaylistMetadataEdit(true);
+            return;
+        }
+        if (target == TextFieldTarget::PlaylistDescription) {
+            const TextEditState originalEdit = *edit;
+            eraseSelection();
+            query.insert(edit->caretIndex, 1, '\n');
+            ++edit->caretIndex;
+            edit->selectionAnchor = edit->caretIndex;
+            if (descriptionFits(query)) {
+                commit(true);
+            } else {
+                *edit = originalEdit;
+            }
+        }
+        return;
+    }
+
+    const bool verticalDescriptionNavigation = target == TextFieldTarget::PlaylistDescription
+        && (event.key == KEY_UP || event.key == KEY_DOWN);
+    if (event.key == KEY_LEFT
+        || event.key == KEY_RIGHT
+        || event.key == KEY_HOME
+        || event.key == KEY_END
+        || verticalDescriptionNavigation) {
+        const bool hasSelection = edit->caretIndex != edit->selectionAnchor;
         if (!event.shift && hasSelection && (event.key == KEY_LEFT || event.key == KEY_RIGHT)) {
-            edit.caretIndex = event.key == KEY_LEFT
-                ? std::min(edit.caretIndex, edit.selectionAnchor)
-                : std::max(edit.caretIndex, edit.selectionAnchor);
+            edit->caretIndex = event.key == KEY_LEFT
+                ? std::min(edit->caretIndex, edit->selectionAnchor)
+                : std::max(edit->caretIndex, edit->selectionAnchor);
         } else {
             switch (event.key) {
             case KEY_LEFT:
-                edit.caretIndex = event.control
-                    ? previousWordBoundary(query, edit.caretIndex)
-                    : (edit.caretIndex > 0 ? edit.caretIndex - 1 : 0);
+                edit->caretIndex = event.control
+                    ? previousWordBoundary(query, edit->caretIndex)
+                    : (edit->caretIndex > 0 ? edit->caretIndex - 1 : 0);
                 break;
             case KEY_RIGHT:
-                edit.caretIndex = event.control
-                    ? nextWordBoundary(query, edit.caretIndex)
-                    : std::min(query.size(), edit.caretIndex + 1);
+                edit->caretIndex = event.control
+                    ? nextWordBoundary(query, edit->caretIndex)
+                    : std::min(query.size(), edit->caretIndex + 1);
                 break;
+            case KEY_UP:
+            case KEY_DOWN: {
+                const Primitive* primitive = primitives_.find(playlistDescriptionFieldId_);
+                const auto* field = primitive == nullptr
+                    ? nullptr
+                    : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+                if (field != nullptr) {
+                    edit->caretIndex = renderer_.textFieldCaretIndexOnAdjacentLine(
+                        *field,
+                        edit->caretIndex,
+                        event.key == KEY_UP ? -1 : 1);
+                }
+                break;
+            }
             case KEY_HOME:
-                edit.caretIndex = 0;
+                if (target == TextFieldTarget::PlaylistDescription && !event.control) {
+                    const Primitive* primitive = primitives_.find(playlistDescriptionFieldId_);
+                    const auto* field = primitive == nullptr
+                        ? nullptr
+                        : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+                    edit->caretIndex = field == nullptr
+                        ? 0
+                        : renderer_.textFieldVisualLineStart(*field, edit->caretIndex);
+                } else {
+                    edit->caretIndex = 0;
+                }
                 break;
             case KEY_END:
-                edit.caretIndex = query.size();
+                if (target == TextFieldTarget::PlaylistDescription && !event.control) {
+                    const Primitive* primitive = primitives_.find(playlistDescriptionFieldId_);
+                    const auto* field = primitive == nullptr
+                        ? nullptr
+                        : std::get_if<TextFieldPrimitive>(&primitive->geometry);
+                    edit->caretIndex = field == nullptr
+                        ? query.size()
+                        : renderer_.textFieldVisualLineEnd(*field, edit->caretIndex);
+                } else {
+                    edit->caretIndex = query.size();
+                }
                 break;
             default:
                 break;
             }
         }
         if (!event.shift) {
-            edit.selectionAnchor = edit.caretIndex;
+            edit->selectionAnchor = edit->caretIndex;
         }
         commit(false);
         return;
@@ -5568,33 +6005,48 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
             return;
         }
 
-        if (event.key == KEY_BACKSPACE && edit.caretIndex > 0) {
+        if (event.key == KEY_BACKSPACE && edit->caretIndex > 0) {
             const std::size_t start = event.control
-                ? previousWordBoundary(query, edit.caretIndex)
-                : edit.caretIndex - 1;
-            query.erase(start, edit.caretIndex - start);
-            edit.caretIndex = start;
-            edit.selectionAnchor = start;
+                ? previousWordBoundary(query, edit->caretIndex)
+                : edit->caretIndex - 1;
+            query.erase(start, edit->caretIndex - start);
+            edit->caretIndex = start;
+            edit->selectionAnchor = start;
             commit(true);
-        } else if (event.key == KEY_DELETE && edit.caretIndex < query.size()) {
+        } else if (event.key == KEY_DELETE && edit->caretIndex < query.size()) {
             const std::size_t end = event.control
-                ? nextWordBoundary(query, edit.caretIndex)
-                : edit.caretIndex + 1;
-            query.erase(edit.caretIndex, end - edit.caretIndex);
-            edit.selectionAnchor = edit.caretIndex;
+                ? nextWordBoundary(query, edit->caretIndex)
+                : edit->caretIndex + 1;
+            query.erase(edit->caretIndex, end - edit->caretIndex);
+            edit->selectionAnchor = edit->caretIndex;
             commit(true);
         }
         return;
     }
 
-    const char character = (!event.control && !event.alt)
+    char character = (!event.control && !event.alt)
         ? characterForKey(event.key, event.shift)
         : '\0';
     if (character != '\0') {
+        const TextEditState originalEdit = *edit;
         eraseSelection();
-        query.insert(edit.caretIndex, 1, character);
-        ++edit.caretIndex;
-        edit.selectionAnchor = edit.caretIndex;
+        if (target == TextFieldTarget::PlaylistTitle
+            && query.size() >= playlistTitleCharacterLimit) {
+            *edit = originalEdit;
+            return;
+        }
+        query.insert(edit->caretIndex, 1, character);
+        ++edit->caretIndex;
+        edit->selectionAnchor = edit->caretIndex;
+        if (target == TextFieldTarget::PlaylistDescription) {
+            const std::size_t characterCount = static_cast<std::size_t>(std::ranges::count_if(query, [](char value) {
+                return value != '\n';
+            }));
+            if (characterCount > playlistDescriptionCharacterLimit || !descriptionFits(query)) {
+                *edit = originalEdit;
+                return;
+            }
+        }
         commit(true);
     }
 }

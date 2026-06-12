@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -110,6 +111,11 @@ struct ImagePrimitive {
     std::string source;
 };
 
+enum class TextWrapMode {
+    None,
+    Word,
+};
+
 struct TextFieldPrimitive {
     float x = 0.0f;
     float y = 0.0f;
@@ -131,6 +137,8 @@ struct TextFieldPrimitive {
     std::size_t selectionStartCodepointIndex = 0;
     std::size_t selectionEndCodepointIndex = 0;
     float horizontalScrollOffset = 0.0f;
+    TextWrapMode wrapMode = TextWrapMode::None;
+    std::size_t maxVisibleLines = std::numeric_limits<std::size_t>::max();
     bool focused = false;
     bool caretVisible = true;
 };

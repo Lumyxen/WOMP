@@ -16,7 +16,7 @@ namespace womp {
 
 namespace {
 
-constexpr int schemaVersion = 3;
+constexpr int schemaVersion = 4;
 
 std::int64_t unixTimeMs()
 {
@@ -210,6 +210,7 @@ void LibraryStore::initialize()
             CREATE TABLE playlists(
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
                 created_at_ms INTEGER NOT NULL,
                 position INTEGER NOT NULL,
                 pinned INTEGER NOT NULL DEFAULT 0
@@ -231,7 +232,7 @@ void LibraryStore::initialize()
                 PRIMARY KEY(playlist_id, track_id),
                 FOREIGN KEY(playlist_id, track_id) REFERENCES playlist_tracks(playlist_id, track_id) ON DELETE CASCADE
             );
-            PRAGMA user_version=3;
+            PRAGMA user_version=4;
         )SQL");
         transaction.commit();
         migrateLegacyState();
@@ -261,6 +262,13 @@ void LibraryStore::initialize()
             Transaction transaction(database_);
             execute("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
             execute("PRAGMA user_version=3");
+            transaction.commit();
+            version = 3;
+        }
+        if (version == 3) {
+            Transaction transaction(database_);
+            execute("ALTER TABLE playlists ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+            execute("PRAGMA user_version=4");
             transaction.commit();
         }
     }
@@ -362,15 +370,16 @@ std::vector<PlaylistRecord> LibraryStore::loadPlaylists() const
         tracksByPlaylist[sqlite3_column_int64(tracks.get(), 0)].push_back(columnText(tracks.get(), 1));
     }
 
-    Statement statement(database_, "SELECT id, name, created_at_ms, position, pinned FROM playlists ORDER BY pinned DESC, position, id");
+    Statement statement(database_, "SELECT id, name, description, created_at_ms, position, pinned FROM playlists ORDER BY pinned DESC, position, id");
     std::vector<PlaylistRecord> playlists;
     while (sqlite3_step(statement.get()) == SQLITE_ROW) {
         PlaylistRecord playlist{
             .id = sqlite3_column_int64(statement.get(), 0),
             .name = columnText(statement.get(), 1),
-            .createdAtMs = sqlite3_column_int64(statement.get(), 2),
-            .position = sqlite3_column_int64(statement.get(), 3),
-            .pinned = sqlite3_column_int(statement.get(), 4) != 0,
+            .description = columnText(statement.get(), 2),
+            .createdAtMs = sqlite3_column_int64(statement.get(), 3),
+            .position = sqlite3_column_int64(statement.get(), 4),
+            .pinned = sqlite3_column_int(statement.get(), 5) != 0,
         };
         if (auto found = tracksByPlaylist.find(playlist.id); found != tracksByPlaylist.end()) {
             playlist.trackIds = std::move(found->second);
@@ -471,6 +480,45 @@ bool LibraryStore::setPlaylistPinned(PlaylistId id, bool pinned)
     sqlite3_bind_int(statement.get(), 3, pinned ? 1 : 0);
     requireDone(database_, statement.get());
     return sqlite3_changes(database_) != 0;
+}
+
+bool LibraryStore::updatePlaylistMetadata(PlaylistId id, std::string_view name, std::string_view description)
+{
+    std::lock_guard lock(databaseMutex_);
+    Statement statement(database_, "UPDATE playlists SET name=?, description=? WHERE id=?");
+    bindText(statement.get(), 1, name);
+    bindText(statement.get(), 2, description);
+    sqlite3_bind_int64(statement.get(), 3, id);
+    requireDone(database_, statement.get());
+    return sqlite3_changes(database_) != 0;
+}
+
+bool LibraryStore::exportPlaylistM3u(PlaylistId id, const std::filesystem::path& path) const
+{
+    std::lock_guard lock(databaseMutex_);
+    Statement exists(database_, "SELECT 1 FROM playlists WHERE id=?");
+    sqlite3_bind_int64(exists.get(), 1, id);
+    if (sqlite3_step(exists.get()) != SQLITE_ROW) {
+        return false;
+    }
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return false;
+    }
+    file << "#EXTM3U\n";
+
+    Statement tracks(database_, R"SQL(
+        SELECT t.relative_path
+        FROM playlist_tracks p JOIN tracks t ON t.id=p.track_id
+        WHERE p.playlist_id=?
+        ORDER BY p.position
+    )SQL");
+    sqlite3_bind_int64(tracks.get(), 1, id);
+    while (sqlite3_step(tracks.get()) == SQLITE_ROW) {
+        file << (dataDirectory_ / columnText(tracks.get(), 0)).string() << '\n';
+    }
+    return file.good();
 }
 
 bool LibraryStore::addTrackToPlaylist(PlaylistId playlistId, const TrackId& trackId)
@@ -576,8 +624,21 @@ void LibraryStore::applyImportBatch(
         }
     }
 
+    Statement membership(database_, R"SQL(
+        INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position)
+        SELECT ?, ?, COALESCE((SELECT MAX(position)+1 FROM playlist_tracks WHERE playlist_id=?), 0)
+        WHERE EXISTS(SELECT 1 FROM playlists WHERE id=?)
+          AND EXISTS(SELECT 1 FROM tracks WHERE id=?)
+    )SQL");
     for (const auto& [playlistId, trackId] : memberships) {
-        addTrackToPlaylist(playlistId, trackId);
+        sqlite3_bind_int64(membership.get(), 1, playlistId);
+        bindText(membership.get(), 2, trackId);
+        sqlite3_bind_int64(membership.get(), 3, playlistId);
+        sqlite3_bind_int64(membership.get(), 4, playlistId);
+        bindText(membership.get(), 5, trackId);
+        requireDone(database_, membership.get());
+        sqlite3_reset(membership.get());
+        sqlite3_clear_bindings(membership.get());
     }
     transaction.commit();
 }

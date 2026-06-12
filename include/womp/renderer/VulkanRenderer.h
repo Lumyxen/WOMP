@@ -2,6 +2,7 @@
 
 #include "womp/platform/WaylandWindow.h"
 #include "womp/scene/Primitive.h"
+#include "womp/scene/TextLayout.h"
 
 #include <vulkan/vulkan.h>
 
@@ -40,6 +41,14 @@ public:
         const std::string& text,
         const std::vector<std::string>& fontFamilies,
         float fontSize) const;
+    std::size_t textFieldCaretIndexAtPoint(const TextFieldPrimitive& field, float x, float y) const;
+    std::size_t textFieldCaretIndexOnAdjacentLine(
+        const TextFieldPrimitive& field,
+        std::size_t caretIndex,
+        int direction) const;
+    std::size_t textFieldVisualLineStart(const TextFieldPrimitive& field, std::size_t caretIndex) const;
+    std::size_t textFieldVisualLineEnd(const TextFieldPrimitive& field, std::size_t caretIndex) const;
+    bool textFieldTextFits(const TextFieldPrimitive& field, const std::string& text) const;
 
 private:
     struct QueueFamily {
@@ -128,8 +137,8 @@ private:
     };
 
     std::unordered_map<PrimitiveId, std::vector<TextGlyphDraw>> textGlyphs_;
-    std::unordered_map<PrimitiveId, float> textCaretX_;
-    std::unordered_map<PrimitiveId, std::array<float, 2>> textSelectionX_;
+    std::unordered_map<PrimitiveId, std::array<float, 2>> textCaretPositions_;
+    std::unordered_map<PrimitiveId, std::vector<std::array<float, 4>>> textSelectionRects_;
 
     struct SvgDraw {
         float rect[4]{};

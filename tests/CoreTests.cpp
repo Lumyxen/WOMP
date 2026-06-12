@@ -4,6 +4,7 @@
 #include "womp/playback/PlaybackQueue.h"
 #include "womp/playback/PlaybackStats.h"
 #include "womp/scene/Primitive.h"
+#include "womp/scene/TextLayout.h"
 
 #include <gst/gst.h>
 #include <sqlite3.h>
@@ -172,6 +173,9 @@ void testStoreAndImport()
         CHECK(tracks.front().formatLabel == "WAV");
         CHECK(std::filesystem::is_regular_file(library / tracks.front().artworkRelativePath));
         CHECK(store.loadPlaylists().back().trackIds == std::vector<TrackId>{id});
+        CHECK(store.updatePlaylistMetadata(playlistId, "Renamed", "First line\nSecond line"));
+        CHECK(store.loadPlaylists().back().name == "Renamed");
+        CHECK(store.loadPlaylists().back().description == "First line\nSecond line");
         CHECK(!store.addTrackToPlaylist(9999, id));
 
         store.applyStatisticDeltas({{
@@ -223,6 +227,28 @@ void testM3u()
     const auto found = std::ranges::find(loaded, id, &PlaylistRecord::id);
     CHECK(found != loaded.end());
     CHECK(found->trackIds == result.trackIds);
+
+    const auto exported = temporary.path() / "exported.m3u8";
+    CHECK(store.exportPlaylistM3u(id, exported));
+    std::ifstream exportedFile(exported);
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(exportedFile, line)) {
+        lines.push_back(std::move(line));
+    }
+    CHECK(lines.size() == 3);
+    CHECK(lines[0] == "#EXTM3U");
+    CHECK(lines[1] == store.absoluteTrackPath(*store.findTrack(result.trackIds[0])).string());
+    CHECK(lines[2] == store.absoluteTrackPath(*store.findTrack(result.trackIds[1])).string());
+    CHECK(!store.exportPlaylistM3u(9999, temporary.path() / "missing.m3u8"));
+
+    const PlaylistId reimportedId = store.createPlaylist("Reimported");
+    const ImportResult reimported = importer.importM3u(exported, reimportedId);
+    CHECK(reimported.duplicates == 2);
+    const auto playlistsAfterReimport = store.loadPlaylists();
+    const auto reimportedPlaylist = std::ranges::find(playlistsAfterReimport, reimportedId, &PlaylistRecord::id);
+    CHECK(reimportedPlaylist != playlistsAfterReimport.end());
+    CHECK(reimportedPlaylist->trackIds == result.trackIds);
 }
 
 void testPlaylistPinning()
@@ -324,8 +350,12 @@ void testStatistics()
     stats.start("track", 7, 60'000, 100, start);
     stats.tick(true, start);
     stats.tick(true, start + std::chrono::seconds{20});
+    CHECK(stats.pendingListenedMsFor(std::nullopt) == 20'000);
+    CHECK(stats.pendingListenedMsFor(7) == 20'000);
+    CHECK(stats.pendingListenedMsFor(8) == 0);
     auto deltas = stats.takeDeltas(start + std::chrono::seconds{20});
     CHECK(deltas.front().listenedMs == 20'000);
+    CHECK(stats.pendingListenedMsFor(std::nullopt) == 0);
     CHECK(deltas.front().listenCount == 1);
     CHECK(deltas.front().playlistId == 7);
     stats.finish(false, true, start + std::chrono::seconds{21});
@@ -439,6 +469,7 @@ void testVersionTwoPinMigration()
     const auto playlists = migrated.loadPlaylists();
     CHECK(playlists.size() == 1);
     CHECK(!playlists.front().pinned);
+    CHECK(playlists.front().description.empty());
     CHECK(migrated.setPlaylistPinned(playlists.front().id, true));
     CHECK(migrated.loadPlaylists().front().pinned);
 }
@@ -483,6 +514,95 @@ void testAudioAndPrimitive()
     CHECK(mpris.takeCommands().empty());
 }
 
+std::vector<TextLayoutCharacter> layoutCharacters(std::string_view text)
+{
+    std::vector<TextLayoutCharacter> result;
+    result.reserve(text.size());
+    for (const unsigned char character : text) {
+        result.push_back({
+            .codepoint = character,
+            .advance = character == '\n' ? 0.0f : 1.0f,
+        });
+    }
+    return result;
+}
+
+void testTextLayout()
+{
+    const TextLayout words = layoutText(layoutCharacters("one two six"), 7.0f, TextWrapMode::Word, 2.0f);
+    CHECK(words.lines.size() == 2);
+    CHECK(words.lines[0].startIndex == 0);
+    CHECK(words.lines[0].endIndex == 7);
+    CHECK(words.lines[1].startIndex == 8);
+    CHECK(words.lines[1].endIndex == 11);
+
+    const TextLayout longWord = layoutText(layoutCharacters("abcdefgh"), 3.0f, TextWrapMode::Word, 2.0f);
+    CHECK(longWord.lines.size() == 3);
+    CHECK(longWord.lines[0].endIndex == 3);
+    CHECK(longWord.lines[1].startIndex == 3);
+    CHECK(longWord.lines[1].endIndex == 6);
+    CHECK(longWord.lines[2].endIndex == 8);
+
+    const TextLayout explicitLines = layoutText(layoutCharacters("a  b\n\nc"), 20.0f, TextWrapMode::Word, 2.0f);
+    CHECK(explicitLines.lines.size() == 3);
+    CHECK(explicitLines.lines[0].startIndex == 0);
+    CHECK(explicitLines.lines[0].endIndex == 4);
+    CHECK(explicitLines.lines[1].startIndex == 5);
+    CHECK(explicitLines.lines[1].endIndex == 5);
+    CHECK(explicitLines.lines[2].startIndex == 6);
+    CHECK(explicitLines.lines[2].endIndex == 7);
+    CHECK(explicitLines.lines[0].width == 4.0f);
+
+    const TextLayout overflow = layoutText(layoutCharacters("aa aa aa aa"), 3.0f, TextWrapMode::Word, 2.0f, 3);
+    CHECK(overflow.lines.size() == 3);
+    CHECK(overflow.overflow);
+    CHECK(overflow.caretRect(overflow.characterCount).y == 4.0f);
+
+    const TextLayout description = layoutText(
+        layoutCharacters("A normal playlist description wraps across multiple visual lines."),
+        24.0f,
+        TextWrapMode::Word,
+        2.0f,
+        3);
+    CHECK(description.lines.size() == 3);
+    CHECK(!description.overflow);
+
+    CHECK(words.caretIndexAtPoint(0.1f, 0.1f) == 0);
+    CHECK(words.caretIndexAtPoint(2.8f, 0.1f) == 3);
+    CHECK(words.caretIndexAtPoint(0.1f, 2.1f) == 8);
+    CHECK(words.caretIndexAtPoint(100.0f, 2.1f) == 11);
+    CHECK(longWord.caretIndexAtPoint(0.1f, 0.1f) == 0);
+    CHECK(longWord.caretIndexAtPoint(0.1f, 2.1f) == 3);
+    CHECK(longWord.caretIndexAtPoint(0.1f, 4.1f) == 6);
+    CHECK(words.visualLineStart(9) == 8);
+    CHECK(words.visualLineEnd(9) == 11);
+    CHECK(words.caretIndexOnAdjacentLine(2, 1) == 10);
+    CHECK(words.caretIndexOnAdjacentLine(10, -1) == 2);
+    CHECK(words.caretIndexOnAdjacentLine(6, 1) == 11);
+    CHECK(words.caretIndexOnAdjacentLine(2, -1) == 2);
+    CHECK(words.caretIndexOnAdjacentLine(10, 1) == 10);
+
+    const auto sameLine = words.selectionRects(1, 3);
+    CHECK(sameLine.size() == 1);
+    CHECK(sameLine[0].x == 1.0f);
+    CHECK(sameLine[0].width == 2.0f);
+    CHECK(sameLine[0].height == 2.0f);
+
+    const auto crossLine = words.selectionRects(2, 10);
+    const auto backward = words.selectionRects(10, 2);
+    CHECK(crossLine.size() == 2);
+    CHECK(crossLine[0].x == 2.0f);
+    CHECK(crossLine[0].width == 5.0f);
+    CHECK(crossLine[1].x == 0.0f);
+    CHECK(crossLine[1].width == 2.0f);
+    CHECK(crossLine[0].x == backward[0].x);
+    CHECK(crossLine[0].width == backward[0].width);
+    CHECK(crossLine[1].x == backward[1].x);
+    CHECK(crossLine[1].width == backward[1].width);
+    CHECK(explicitLines.visualLineEnd(4) == 4);
+    CHECK(explicitLines.visualLineStart(5) == 5);
+}
+
 } // namespace
 
 int main()
@@ -498,6 +618,7 @@ int main()
         testLegacyDefaultPlaylistMigration();
         testVersionTwoPinMigration();
         testAudioAndPrimitive();
+        testTextLayout();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
