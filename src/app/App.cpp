@@ -1280,6 +1280,17 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     constexpr float timestampGap = 10.0f;
     constexpr float timestampWidth = 46.0f;
     constexpr float timestampFontSize = 13.0f;
+    constexpr float nowPlayingArtworkSize = 56.0f;
+    constexpr float nowPlayingTextGap = 12.0f;
+    constexpr float nowPlayingControlGap = 12.0f;
+    constexpr float minNowPlayingWidth = 200.0f;
+    constexpr float nowPlayingTitleFontSize = 16.0f;
+    constexpr float nowPlayingArtistFontSize = 13.0f;
+    constexpr float nowPlayingBadgeFontSize = 10.0f;
+    constexpr float nowPlayingBadgeCharacterWidth = 5.5f;
+    constexpr float nowPlayingBadgeHorizontalPadding = 5.0f;
+    constexpr float nowPlayingBadgeGap = 8.0f;
+    constexpr float nowPlayingBadgeHeight = 16.0f;
     const Color sidebarBackground = rgb(45, 53, 59);
     const Color transparent = {0.0f, 0.0f, 0.0f, 0.0f};
     const Color sidebarText = rgb(211, 198, 170);
@@ -1291,6 +1302,10 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const Color separator = rgb(71, 82, 88);
     const Color transportBar = rgb(133, 146, 137);
     const Color timestampText = rgb(211, 198, 170);
+    const Track* currentTrack = nullptr;
+    if (hasCurrentSong_ && playbackQueue_.current()) {
+        currentTrack = findTrack(*playbackQueue_.current());
+    }
 
     const std::string addSongsIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#859289" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus-icon lucide-plus"><path d="M5 12h14"/><path d="M12 5v14"/></svg>)";
     const std::string addPlaylistIcon = R"(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-list-plus-icon lucide-list-plus"><path d="M16 5H3"/><path d="M11 12H3"/><path d="M16 19H3"/><path d="M18 9v6"/><path d="M21 12h-6"/></svg>)";
@@ -1568,7 +1583,176 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     mediaProgressSliderWidth_ = transportBarWidth;
     mediaProgressSliderHeight_ = transportBarThickness;
     mediaProgressSliderHitHeight_ = transportBarKnobRadius * 2.0f;
-    addShuffleButton(transportX - shuffleButtonSize - transportButtonGap, transportY + (transportButtonSize - shuffleButtonSize) * 0.5f);
+    const float shuffleX = transportX - shuffleButtonSize - transportButtonGap;
+    const float nowPlayingX = sidebarWidth + sidebarPadding;
+    const float nowPlayingWidth = shuffleX - nowPlayingControlGap - nowPlayingX;
+    if (currentTrack != nullptr && nowPlayingWidth >= minNowPlayingWidth) {
+        const auto fitNowPlayingText = [this](
+                                           const std::string& text,
+                                           float width,
+                                           float fontSize) {
+            if (text.empty() || width <= 0.0f) {
+                return std::string{};
+            }
+
+            if (renderer_.measureTextVisualWidth(text, {}, fontSize) <= width) {
+                return text;
+            }
+
+            constexpr std::string_view ellipsis = "...";
+            std::string truncated = text;
+            while (!truncated.empty()) {
+                std::size_t finalCodepoint = truncated.size() - 1;
+                while (finalCodepoint > 0
+                    && (static_cast<unsigned char>(truncated[finalCodepoint]) & 0xc0u) == 0x80u) {
+                    --finalCodepoint;
+                }
+                truncated.resize(finalCodepoint);
+
+                const std::string candidate = truncated + std::string(ellipsis);
+                if (renderer_.measureTextVisualWidth(candidate, {}, fontSize) <= width) {
+                    return candidate;
+                }
+            }
+
+            return std::string{};
+        };
+
+        const float textX = nowPlayingX + nowPlayingArtworkSize + nowPlayingTextGap;
+        const float artistRight = mediaProgressSliderX_ - timestampGap - timestampWidth - nowPlayingControlGap;
+        const float metadataRight = std::min(
+            nowPlayingX + nowPlayingWidth,
+            artistRight);
+        const float metadataWidth = std::max(0.0f, metadataRight - textX);
+        const std::string badge = playlistTrackFileTypeBadge(*currentTrack);
+        const float badgeTextWidth = static_cast<float>(badge.size()) * nowPlayingBadgeCharacterWidth;
+        const float badgeWidth = badgeTextWidth + nowPlayingBadgeHorizontalPadding * 2.0f;
+        const float titleWidth = std::max(0.0f, metadataWidth - badgeWidth - nowPlayingBadgeGap);
+        const std::string title = fitNowPlayingText(
+            currentTrack->title,
+            titleWidth,
+            nowPlayingTitleFontSize);
+        const float titleVisualWidth = renderer_.measureTextVisualWidth(title, {}, nowPlayingTitleFontSize);
+        const float badgeX = std::min(
+            metadataRight - badgeWidth,
+            textX + titleVisualWidth + nowPlayingBadgeGap);
+        const std::string artists = fitNowPlayingText(
+            joinArtists(currentTrack->artists),
+            metadataWidth,
+            nowPlayingArtistFontSize);
+        const PrimitiveClipRect titleClip{
+            .x = textX,
+            .y = transportY,
+            .width = titleWidth,
+            .height = nowPlayingArtworkSize,
+        };
+        const PrimitiveClipRect artistClip{
+            .x = textX,
+            .y = transportY,
+            .width = metadataWidth,
+            .height = nowPlayingArtworkSize,
+        };
+
+        primitives_.add(Primitive::roundedRect(
+            {
+                .x = nowPlayingX,
+                .y = transportY,
+                .width = nowPlayingArtworkSize,
+                .height = nowPlayingArtworkSize,
+                .radius = 0.0f,
+            },
+            {
+                .fill = mantle,
+                .stroke = border,
+                .strokeWidth = 1.0f,
+            }));
+        if (!currentTrack->artworkPath.empty()) {
+            primitives_.add(Primitive::image(
+                {
+                    .x = nowPlayingX,
+                    .y = transportY,
+                    .width = nowPlayingArtworkSize,
+                    .height = nowPlayingArtworkSize,
+                    .source = currentTrack->artworkPath.string(),
+                },
+                {
+                    .fill = {1.0f, 1.0f, 1.0f, 1.0f},
+                    .stroke = transparent,
+                    .strokeWidth = 0.0f,
+                }));
+        } else {
+            primitives_.add(Primitive::svg(
+                {
+                    .x = nowPlayingX + 14.0f,
+                    .y = transportY + 14.0f,
+                    .width = 28.0f,
+                    .height = 28.0f,
+                    .rasterScale = 4.0f,
+                    .source = defaultCoverIcon,
+                    .sourceType = SvgSourceType::Data,
+                    .renderMode = SvgRenderMode::Mask,
+                },
+                {
+                    .fill = iconGrey,
+                    .stroke = transparent,
+                    .strokeWidth = 0.0f,
+                }));
+        }
+        Primitive titlePrimitive = Primitive::text(
+            {
+                .x = textX,
+                .y = transportY + 5.0f,
+                .fontSize = nowPlayingTitleFontSize,
+                .text = title,
+            },
+            {
+                .fill = sidebarText,
+                .stroke = sidebarText,
+                .strokeWidth = 0.0f,
+            });
+        titlePrimitive.clip = titleClip;
+        primitives_.add(std::move(titlePrimitive));
+        primitives_.add(Primitive::roundedRect(
+            {
+                .x = badgeX,
+                .y = transportY + 6.5f,
+                .width = badgeWidth,
+                .height = nowPlayingBadgeHeight,
+                .radius = 0.0f,
+            },
+            {
+                .fill = mantle,
+                .stroke = border,
+                .strokeWidth = 1.0f,
+            }));
+        primitives_.add(Primitive::text(
+            {
+                .x = badgeX + nowPlayingBadgeHorizontalPadding,
+                .y = transportY + 8.0f,
+                .fontSize = nowPlayingBadgeFontSize,
+                .text = badge,
+            },
+            {
+                .fill = accent,
+                .stroke = accent,
+                .strokeWidth = 0.0f,
+            }));
+        Primitive artistPrimitive = Primitive::text(
+            {
+                .x = textX,
+                .y = transportY + 34.0f,
+                .fontSize = nowPlayingArtistFontSize,
+                .text = artists,
+            },
+            {
+                .fill = iconGrey,
+                .stroke = iconGrey,
+                .strokeWidth = 0.0f,
+            });
+        artistPrimitive.clip = artistClip;
+        primitives_.add(std::move(artistPrimitive));
+    }
+    addShuffleButton(shuffleX, transportY + (transportButtonSize - shuffleButtonSize) * 0.5f);
     addTransportButton(backwardIcon, transportX, transportY, [this] { playPrevious(); });
     playPauseButtonId_ = addTransportButton(playing_ ? pauseIcon : playIcon, transportX + transportButtonSize + transportButtonGap, transportY, [this]() {
         togglePlayback();
