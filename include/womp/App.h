@@ -143,7 +143,9 @@ private:
     void flushPlaybackStats();
     void handleMprisCommands();
     void updateMpris();
-    bool confirmPlaylistDeletion(PlaylistId id) const;
+    void openDeletePlaylistMenu(PlaylistId id);
+    void closeDeletePlaylistMenu();
+    void confirmPlaylistDeletion();
     bool selectedSourceIsCurrent() const;
     std::vector<TrackId> selectedSourceTrackIds() const;
     const Track* findTrack(const TrackId& id) const;
@@ -164,6 +166,7 @@ private:
     bool activeModalContains(float x, float y) const;
     bool createPlaylistMenuContains(float x, float y) const;
     bool addSongsMenuContains(float x, float y) const;
+    bool deletePlaylistMenuContains(float x, float y) const;
     bool addSongsSearchFieldContains(float x, float y) const;
     bool playlistSearchFieldContains(float x, float y) const;
     bool playlistTitleFieldContains(float x, float y) const;
@@ -207,6 +210,7 @@ private:
     PrimitiveId firstModalPrimitiveId_ = 0;
     bool createPlaylistMenuOpen_ = false;
     bool addSongsMenuOpen_ = false;
+    PlaylistId deletePlaylistId_ = 0;
     bool addSongsSearchFocused_ = false;
     TextEditState addSongsSearchEdit_;
     bool addSongsDirectoryOptionsVisible_ = false;

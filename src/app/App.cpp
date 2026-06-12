@@ -116,6 +116,9 @@ constexpr float minAddSongsMenuHeight = 236.0f;
 constexpr float createPlaylistMenuWidth = 480.0f;
 constexpr float createPlaylistMenuHeight = 182.0f;
 constexpr float minCreatePlaylistMenuWidth = 340.0f;
+constexpr float deletePlaylistMenuWidth = 480.0f;
+constexpr float deletePlaylistMenuHeight = 210.0f;
+constexpr float minDeletePlaylistMenuWidth = 340.0f;
 constexpr float addSongsPlaylistOptionHeight = 36.0f;
 constexpr float addSongsMenuButtonGap = 10.0f;
 constexpr float addSongsFullListWidth = 360.0f;
@@ -219,6 +222,18 @@ Rect createPlaylistMenuRect(float windowWidth, float windowHeight)
         createPlaylistMenuHeight,
         minCreatePlaylistMenuWidth,
         createPlaylistMenuHeight,
+        floatingMenuMargin);
+}
+
+Rect deletePlaylistMenuRect(float windowWidth, float windowHeight)
+{
+    return centeredFitRect(
+        windowWidth,
+        windowHeight,
+        deletePlaylistMenuWidth,
+        deletePlaylistMenuHeight,
+        minDeletePlaylistMenuWidth,
+        deletePlaylistMenuHeight,
         floatingMenuMargin);
 }
 
@@ -1892,9 +1907,7 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     };
     if (!allSongsSelected) {
         addHeaderAction(deleteIcon, false, true, [this, playlistId = selectedPlaylistId_]() {
-            if (confirmPlaylistDeletion(playlistId)) {
-                removePlaylist(playlistId);
-            }
+            openDeletePlaylistMenu(playlistId);
         });
         addHeaderAction(selectedPlaylist->pinned ? pinOffIcon : pinIcon, selectedPlaylist->pinned, false, [this, playlistId = selectedPlaylistId_]() {
             const auto playlist = std::ranges::find(playlists_, playlistId, &Playlist::id);
@@ -3110,6 +3123,145 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
                 }));
         }
     }
+
+    if (deletePlaylistId_ != 0) {
+        constexpr float menuPadding = 20.0f;
+        constexpr float menuButtonHeight = 44.0f;
+        constexpr float menuButtonGap = 10.0f;
+        const Rect menu = deletePlaylistMenuRect(windowWidth, windowHeight);
+        const Color menuBackground = rgb(52, 63, 68);
+        const Color menuSubtleText = rgb(133, 146, 137);
+        const Color dimOverlay = rgb(30, 35, 38, 0.72f);
+        const Color neutralButtonFill = rgb(55, 65, 69);
+        const Color neutralButtonHoverFill = rgb(65, 75, 80);
+        const Color neutralButtonPressedFill = rgb(73, 81, 86);
+        const Color dangerColor = rgb(224, 91, 91);
+        const Color dangerFill = rgb(91, 48, 51);
+        const Color dangerHoverFill = rgb(110, 55, 58);
+        const auto playlist = std::ranges::find(playlists_, deletePlaylistId_, &Playlist::id);
+        const std::string playlistName = playlist == playlists_.end()
+            ? std::string{"this playlist"}
+            : "\"" + truncateText(
+                  playlist->name,
+                  static_cast<std::size_t>(std::max(12.0f, (menu.width - menuPadding * 2.0f - 58.0f) / 8.0f)))
+                + "\"";
+        const float buttonWidth = (menu.width - menuPadding * 2.0f - menuButtonGap) * 0.5f;
+        const float buttonY = menu.y + menu.height - menuPadding - menuButtonHeight;
+
+        firstModalPrimitiveId_ = primitives_.add(Primitive::quad(
+            {
+                .x = 0.0f,
+                .y = 0.0f,
+                .width = windowWidth,
+                .height = windowHeight,
+            },
+            {
+                .fill = dimOverlay,
+                .stroke = dimOverlay,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::roundedRect(
+            {
+                .x = menu.x,
+                .y = menu.y,
+                .width = menu.width,
+                .height = menu.height,
+                .radius = 0.0f,
+            },
+            {
+                .fill = menuBackground,
+                .stroke = dangerColor,
+                .strokeWidth = 1.0f,
+            }));
+        primitives_.add(Primitive::text(
+            {
+                .x = menu.x + menuPadding,
+                .y = menu.y + 24.0f,
+                .fontSize = 19.0f,
+                .text = "Delete Playlist",
+            },
+            {
+                .fill = sidebarText,
+                .stroke = sidebarText,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::text(
+            {
+                .x = menu.x + menuPadding,
+                .y = menu.y + 68.0f,
+                .fontSize = 15.0f,
+                .text = "Delete " + playlistName + "?",
+            },
+            {
+                .fill = sidebarText,
+                .stroke = sidebarText,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::text(
+            {
+                .x = menu.x + menuPadding,
+                .y = menu.y + 94.0f,
+                .fontSize = 14.0f,
+                .text = "Songs will remain in your library.",
+            },
+            {
+                .fill = menuSubtleText,
+                .stroke = menuSubtleText,
+                .strokeWidth = 0.0f,
+            }));
+        primitives_.add(Primitive::button(
+            {
+                .x = menu.x + menuPadding,
+                .y = buttonY,
+                .width = buttonWidth,
+                .height = menuButtonHeight,
+                .padding = 12.0f,
+                .radius = 0.0f,
+                .fontSize = 15.0f,
+                .label = "Cancel",
+                .labelColor = sidebarText,
+                .hoverLabelColor = sidebarText,
+                .pressedLabelColor = sidebarText,
+                .hoverFill = neutralButtonHoverFill,
+                .pressedFill = neutralButtonPressedFill,
+                .hoverStroke = accent,
+                .pressedStroke = accent,
+                .onClick = [this]() {
+                    closeDeletePlaylistMenu();
+                },
+            },
+            {
+                .fill = neutralButtonFill,
+                .stroke = border,
+                .strokeWidth = 1.0f,
+            }));
+        primitives_.add(Primitive::button(
+            {
+                .x = menu.x + menuPadding + buttonWidth + menuButtonGap,
+                .y = buttonY,
+                .width = buttonWidth,
+                .height = menuButtonHeight,
+                .padding = 12.0f,
+                .radius = 0.0f,
+                .fontSize = 15.0f,
+                .label = "Delete Playlist",
+                .labelColor = sidebarText,
+                .hoverLabelColor = sidebarText,
+                .pressedLabelColor = sidebarText,
+                .hoverFill = dangerHoverFill,
+                .pressedFill = dangerFill,
+                .hoverStroke = dangerColor,
+                .pressedStroke = dangerColor,
+                .onClick = [this]() {
+                    confirmPlaylistDeletion();
+                },
+            },
+            {
+                .fill = dangerFill,
+                .stroke = dangerColor,
+                .strokeWidth = 1.0f,
+            }));
+    }
 }
 
 App::App()
@@ -4115,6 +4267,7 @@ void App::refreshAudioScanProgress()
 void App::toggleAddSongsMenu()
 {
     createPlaylistMenuOpen_ = false;
+    deletePlaylistId_ = 0;
     addSongsMenuOpen_ = !addSongsMenuOpen_;
     if (!addSongsMenuOpen_) {
         resetAddSongsMenuState(true);
@@ -4127,6 +4280,7 @@ void App::toggleAddSongsMenu()
 
 void App::toggleCreatePlaylistMenu()
 {
+    deletePlaylistId_ = 0;
     createPlaylistMenuOpen_ = !createPlaylistMenuOpen_;
     if (createPlaylistMenuOpen_) {
         addSongsMenuOpen_ = false;
@@ -4585,7 +4739,7 @@ bool App::addSongsMenuContains(float x, float y) const
 
 bool App::anyModalOpen() const
 {
-    return createPlaylistMenuOpen_ || addSongsMenuOpen_;
+    return createPlaylistMenuOpen_ || addSongsMenuOpen_ || deletePlaylistId_ != 0;
 }
 
 bool App::activeModalContains(float x, float y) const
@@ -4593,13 +4747,26 @@ bool App::activeModalContains(float x, float y) const
     if (createPlaylistMenuOpen_) {
         return createPlaylistMenuContains(x, y);
     }
-    return addSongsMenuOpen_ && addSongsMenuContains(x, y);
+    if (addSongsMenuOpen_) {
+        return addSongsMenuContains(x, y);
+    }
+    return deletePlaylistId_ != 0 && deletePlaylistMenuContains(x, y);
 }
 
 bool App::createPlaylistMenuContains(float x, float y) const
 {
     return contains(
         createPlaylistMenuRect(
+            static_cast<float>(window_.width()),
+            static_cast<float>(window_.height())),
+        x,
+        y);
+}
+
+bool App::deletePlaylistMenuContains(float x, float y) const
+{
+    return contains(
+        deletePlaylistMenuRect(
             static_cast<float>(window_.width()),
             static_cast<float>(window_.height())),
         x,
@@ -5022,15 +5189,39 @@ void App::updateMpris()
         std::move(metadata));
 }
 
-bool App::confirmPlaylistDeletion(PlaylistId id) const
+void App::openDeletePlaylistMenu(PlaylistId id)
 {
     const auto playlist = std::ranges::find(playlists_, id, &Playlist::id);
     if (playlist == playlists_.end()) {
-        return false;
+        return;
     }
-    const std::string command = "zenity --question --title='Delete Playlist' --text="
-        + shellQuote("Delete playlist \"" + playlist->name + "\"? Songs will remain in your library.");
-    return std::system(command.c_str()) == 0;
+
+    createPlaylistMenuOpen_ = false;
+    addSongsMenuOpen_ = false;
+    resetAddSongsMenuState(true);
+    playlistSearchFocused_ = false;
+    draggingSearchSelection_ = TextFieldTarget::None;
+    deletePlaylistId_ = id;
+    rebuildScene();
+}
+
+void App::closeDeletePlaylistMenu()
+{
+    if (deletePlaylistId_ == 0) {
+        return;
+    }
+
+    deletePlaylistId_ = 0;
+    rebuildScene();
+}
+
+void App::confirmPlaylistDeletion()
+{
+    const PlaylistId id = deletePlaylistId_;
+    deletePlaylistId_ = 0;
+    if (id != 0) {
+        removePlaylist(id);
+    }
 }
 
 void App::clampTextEditState(TextEditState& state, const std::string& text) const
@@ -5325,8 +5516,10 @@ void App::handlePointerEvent(const WaylandWindow::PointerEvent& event)
         && !activeModalContains(event.x, event.y)) {
         if (createPlaylistMenuOpen_) {
             closeCreatePlaylistMenu();
-        } else {
+        } else if (addSongsMenuOpen_) {
             closeAddSongsMenu();
+        } else {
+            closeDeletePlaylistMenu();
         }
         window_.setCursor(WaylandWindow::CursorShape::Default);
         return;
@@ -5822,6 +6015,8 @@ void App::handleKeyEvent(const WaylandWindow::KeyEvent& event)
             closeCreatePlaylistMenu();
         } else if (addSongsMenuOpen_) {
             closeAddSongsMenu();
+        } else if (deletePlaylistId_ != 0) {
+            closeDeletePlaylistMenu();
         } else if (playlistMetadataField_ != TextFieldTarget::None) {
             finishPlaylistMetadataEdit(false);
         } else if (playlistSearchFocused_) {
