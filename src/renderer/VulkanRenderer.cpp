@@ -1496,9 +1496,9 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, VkFrameb
 
                 const PrimitiveClipRect contentClip{
                     .x = textField->x + textField->padding,
-                    .y = textField->y + textField->padding,
+                    .y = textField->y,
                     .width = std::max(0.0f, textField->width - textField->padding * 2.0f),
-                    .height = std::max(0.0f, textField->height - textField->padding * 2.0f),
+                    .height = textField->height,
                 };
                 std::optional<PrimitiveClipRect> effectiveContentClip = contentClip;
                 if (primitive.clip) {
