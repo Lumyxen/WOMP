@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 
 namespace womp {
@@ -23,6 +24,83 @@ void initializeGstreamer()
     });
 }
 
+std::optional<float> spectrumMagnitude(const GValue* value)
+{
+    if (G_VALUE_HOLDS_FLOAT(value)) {
+        return g_value_get_float(value);
+    }
+    if (G_VALUE_HOLDS_DOUBLE(value)) {
+        return static_cast<float>(g_value_get_double(value));
+    }
+    return std::nullopt;
+}
+
+guint spectrumValueCount(const GValue* value)
+{
+    return GST_VALUE_HOLDS_ARRAY(value)
+        ? gst_value_array_get_size(value)
+        : gst_value_list_get_size(value);
+}
+
+const GValue* spectrumValueAt(const GValue* value, guint index)
+{
+    return GST_VALUE_HOLDS_ARRAY(value)
+        ? gst_value_array_get_value(value, index)
+        : gst_value_list_get_value(value, index);
+}
+
+std::vector<float> spectrumChannel(const GValue* values)
+{
+    std::vector<float> result;
+    if (!GST_VALUE_HOLDS_LIST(values) && !GST_VALUE_HOLDS_ARRAY(values)) {
+        return result;
+    }
+
+    const guint size = spectrumValueCount(values);
+    result.reserve(size);
+    for (guint index = 0; index < size; ++index) {
+        if (const auto magnitude = spectrumMagnitude(spectrumValueAt(values, index))) {
+            result.push_back(*magnitude);
+        }
+    }
+    return result;
+}
+
+std::optional<AudioPlayer::SpectrumFrame> parseSpectrumMessage(GstMessage* message)
+{
+    const GstStructure* structure = gst_message_get_structure(message);
+    if (structure == nullptr || !gst_structure_has_name(structure, "spectrum")) {
+        return std::nullopt;
+    }
+
+    const GValue* magnitudes = gst_structure_get_value(structure, "magnitude");
+    if (magnitudes == nullptr || (!GST_VALUE_HOLDS_LIST(magnitudes) && !GST_VALUE_HOLDS_ARRAY(magnitudes))) {
+        return std::nullopt;
+    }
+
+    AudioPlayer::SpectrumFrame frame;
+    const guint size = spectrumValueCount(magnitudes);
+    if (size > 0) {
+        const GValue* first = spectrumValueAt(magnitudes, 0);
+        if (GST_VALUE_HOLDS_LIST(first) || GST_VALUE_HOLDS_ARRAY(first)) {
+            frame.channelMagnitudesDb.reserve(size);
+            for (guint index = 0; index < size; ++index) {
+                std::vector<float> channel = spectrumChannel(spectrumValueAt(magnitudes, index));
+                if (!channel.empty()) {
+                    frame.channelMagnitudesDb.push_back(std::move(channel));
+                }
+            }
+        } else {
+            std::vector<float> channel = spectrumChannel(magnitudes);
+            if (!channel.empty()) {
+                frame.channelMagnitudesDb.push_back(std::move(channel));
+            }
+        }
+    }
+
+    return frame.channelMagnitudesDb.empty() ? std::nullopt : std::optional{std::move(frame)};
+}
+
 } // namespace
 
 AudioPlayer::AudioPlayer(bool fakeSink)
@@ -35,6 +113,20 @@ AudioPlayer::AudioPlayer(bool fakeSink)
     if (player_ == nullptr) {
         throw std::runtime_error("GStreamer playbin is unavailable");
     }
+
+    if (GstElement* spectrum = gst_element_factory_make("spectrum", "audio-spectrum")) {
+        g_object_set(
+            spectrum,
+            "bands", 10u,
+            "multi-channel", TRUE,
+            "interval", static_cast<guint64>(50 * GST_MSECOND),
+            "threshold", -70,
+            "message-magnitude", TRUE,
+            "message-phase", FALSE,
+            nullptr);
+        g_object_set(player_, "audio-filter", spectrum, nullptr);
+    }
+
     if (fakeSink) {
         GstElement* sink = gst_element_factory_make("fakesink", "audio-fakesink");
         if (sink == nullptr) {
@@ -126,10 +218,12 @@ bool AudioPlayer::actuallyPlaying() const
 std::vector<AudioPlayer::Event> AudioPlayer::pollEvents()
 {
     std::vector<Event> events;
+    std::optional<SpectrumFrame> latestSpectrum;
     GstBus* bus = gst_element_get_bus(player_);
     while (GstMessage* message = gst_bus_pop_filtered(
                bus,
-               static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR | GST_MESSAGE_STATE_CHANGED))) {
+               static_cast<GstMessageType>(
+                   GST_MESSAGE_EOS | GST_MESSAGE_ERROR | GST_MESSAGE_STATE_CHANGED | GST_MESSAGE_ELEMENT))) {
         if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
             events.push_back({.type = EventType::Eos});
         } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
@@ -141,10 +235,20 @@ std::vector<AudioPlayer::Event> AudioPlayer::pollEvents()
             g_free(debug);
         } else if (GST_MESSAGE_SRC(message) == GST_OBJECT(player_)) {
             events.push_back({.type = EventType::StateChanged});
+        } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ELEMENT) {
+            if (auto frame = parseSpectrumMessage(message)) {
+                latestSpectrum = std::move(*frame);
+            }
         }
         gst_message_unref(message);
     }
     gst_object_unref(bus);
+    if (latestSpectrum) {
+        events.push_back({
+            .type = EventType::Spectrum,
+            .spectrum = std::move(*latestSpectrum),
+        });
+    }
     return events;
 }
 

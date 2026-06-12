@@ -9,6 +9,7 @@
 #include "womp/renderer/VulkanRenderer.h"
 #include "womp/scene/Primitive.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -177,6 +178,9 @@ private:
     bool canSeekMediaProgress() const;
     void refreshVolumeControl();
     void refreshMediaProgressControl();
+    void resetVisualizerState();
+    void applySpectrumFrame(const AudioPlayer::SpectrumFrame& frame);
+    void refreshVisualizer();
     void refreshListenedTime();
     void setPlaylistSearchQuery(std::string query);
     void rebuildPlaylistTrackFilter();
@@ -309,6 +313,16 @@ private:
     PrimitiveId volumeButtonId_ = 0;
     PrimitiveId volumeSliderFillId_ = 0;
     PrimitiveId volumeSliderKnobId_ = 0;
+    std::array<std::array<PrimitiveId, 10>, 2> visualizerBarIds_{};
+    std::array<std::array<float, 10>, 2> visualizerLevels_{};
+    std::array<float, 10> visualizerLowDb_{};
+    std::array<float, 10> visualizerHighDb_{};
+    bool visualizerRangeInitialized_ = false;
+    float visualizerX_ = 0.0f;
+    float visualizerY_ = 0.0f;
+    float visualizerWidth_ = 0.0f;
+    float visualizerHeight_ = 26.0f;
+    bool visualizerVisible_ = false;
     PrimitiveId audioScanStatusTextId_ = 0;
     PrimitiveId audioScanPathTextId_ = 0;
     PrimitiveId audioScanProgressFillId_ = 0;

@@ -16,6 +16,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <numbers>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -54,29 +56,41 @@ void writeLe32(std::ofstream& file, std::uint32_t value)
     writeLe16(file, static_cast<std::uint16_t>(value >> 16));
 }
 
-void writeWav(const std::filesystem::path& path, int durationMs)
+void writeToneWav(
+    const std::filesystem::path& path,
+    int durationMs,
+    const std::vector<double>& frequencies)
 {
     constexpr std::uint32_t sampleRate = 8000;
+    const std::uint16_t channels = static_cast<std::uint16_t>(frequencies.size());
     const std::uint32_t samples = sampleRate * static_cast<std::uint32_t>(durationMs) / 1000;
-    const std::uint32_t dataSize = samples * 2;
+    const std::uint32_t dataSize = samples * channels * 2;
     std::ofstream file(path, std::ios::binary);
     file.write("RIFF", 4);
     writeLe32(file, 36 + dataSize);
     file.write("WAVEfmt ", 8);
     writeLe32(file, 16);
     writeLe16(file, 1);
-    writeLe16(file, 1);
+    writeLe16(file, channels);
     writeLe32(file, sampleRate);
-    writeLe32(file, sampleRate * 2);
-    writeLe16(file, 2);
+    writeLe32(file, sampleRate * channels * 2);
+    writeLe16(file, channels * 2);
     writeLe16(file, 16);
     file.write("data", 4);
     writeLe32(file, dataSize);
     for (std::uint32_t index = 0; index < samples; ++index) {
-        const auto value = static_cast<std::int16_t>(
-            std::sin(static_cast<double>(index) * 0.12) * 12000.0);
-        writeLe16(file, static_cast<std::uint16_t>(value));
+        for (const double frequency : frequencies) {
+            const auto value = static_cast<std::int16_t>(
+                std::sin(static_cast<double>(index) * frequency * 2.0 * std::numbers::pi / sampleRate)
+                * 12000.0);
+            writeLe16(file, static_cast<std::uint16_t>(value));
+        }
     }
+}
+
+void writeWav(const std::filesystem::path& path, int durationMs)
+{
+    writeToneWav(path, durationMs, {440.0});
 }
 
 void writeJpegCover(const std::filesystem::path& path)
@@ -514,6 +528,77 @@ void testAudioAndPrimitive()
     CHECK(mpris.takeCommands().empty());
 }
 
+void testAudioSpectrum()
+{
+    gst_init(nullptr, nullptr);
+    GstElementFactory* spectrumFactory = gst_element_factory_find("spectrum");
+    TemporaryDirectory temporary;
+    const auto fallbackSong = temporary.path() / "fallback.wav";
+    writeWav(fallbackSong, 500);
+
+    if (spectrumFactory != nullptr) {
+        GstRegistry* registry = gst_registry_get();
+        gst_registry_remove_feature(registry, GST_PLUGIN_FEATURE(spectrumFactory));
+        {
+            AudioPlayer player(true);
+            CHECK(player.play(fallbackSong));
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            CHECK(std::ranges::none_of(player.pollEvents(), [](const AudioPlayer::Event& event) {
+                return event.type == AudioPlayer::EventType::Error;
+            }));
+        }
+        CHECK(gst_registry_add_feature(
+            registry,
+            GST_PLUGIN_FEATURE(gst_object_ref(spectrumFactory))));
+        gst_object_unref(spectrumFactory);
+    } else {
+        AudioPlayer player(true);
+        CHECK(player.play(fallbackSong));
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        CHECK(std::ranges::none_of(player.pollEvents(), [](const AudioPlayer::Event& event) {
+            return event.type == AudioPlayer::EventType::Error;
+        }));
+        return;
+    }
+
+    const auto monoSong = temporary.path() / "mono.wav";
+    const auto stereoSong = temporary.path() / "stereo.wav";
+    writeToneWav(monoSong, 1000, {440.0});
+    writeToneWav(stereoSong, 1000, {220.0, 1760.0});
+
+    const auto latestSpectrum = [](AudioPlayer& player) {
+        std::optional<AudioPlayer::SpectrumFrame> latest;
+        for (int attempt = 0; attempt < 20 && !latest; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{25});
+            std::size_t spectrumEvents = 0;
+            for (const AudioPlayer::Event& event : player.pollEvents()) {
+                CHECK(event.type != AudioPlayer::EventType::Error);
+                if (event.type == AudioPlayer::EventType::Spectrum) {
+                    ++spectrumEvents;
+                    latest = event.spectrum;
+                }
+            }
+            CHECK(spectrumEvents <= 1);
+        }
+        CHECK(latest.has_value());
+        return *latest;
+    };
+
+    AudioPlayer monoPlayer(true);
+    CHECK(monoPlayer.play(monoSong));
+    const AudioPlayer::SpectrumFrame mono = latestSpectrum(monoPlayer);
+    CHECK(mono.channelMagnitudesDb.size() == 1);
+    CHECK(mono.channelMagnitudesDb.front().size() == 10);
+
+    AudioPlayer stereoPlayer(true);
+    CHECK(stereoPlayer.play(stereoSong));
+    const AudioPlayer::SpectrumFrame stereo = latestSpectrum(stereoPlayer);
+    CHECK(stereo.channelMagnitudesDb.size() == 2);
+    CHECK(stereo.channelMagnitudesDb[0].size() == 10);
+    CHECK(stereo.channelMagnitudesDb[1].size() == 10);
+    CHECK(stereo.channelMagnitudesDb[0] != stereo.channelMagnitudesDb[1]);
+}
+
 std::vector<TextLayoutCharacter> layoutCharacters(std::string_view text)
 {
     std::vector<TextLayoutCharacter> result;
@@ -618,6 +703,7 @@ int main()
         testLegacyDefaultPlaylistMigration();
         testVersionTwoPinMigration();
         testAudioAndPrimitive();
+        testAudioSpectrum();
         testTextLayout();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

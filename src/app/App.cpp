@@ -1277,6 +1277,10 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     constexpr float minTransportBarWidth = 120.0f;
     constexpr float transportBarThickness = 4.0f;
     constexpr float transportBarKnobRadius = 6.0f;
+    constexpr float preferredVisualizerWidth = 168.0f;
+    constexpr float minVisualizerWidth = 96.0f;
+    constexpr float visualizerHeight = 26.0f;
+    constexpr float visualizerControlGap = 12.0f;
     constexpr float timestampGap = 10.0f;
     constexpr float timestampWidth = 46.0f;
     constexpr float timestampFontSize = 13.0f;
@@ -1573,6 +1577,15 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
     const float volumeSliderWidth = std::clamp(mainContentWidth * 0.14f, minVolumeSliderWidth, maxVolumeSliderWidth);
     const float volumeControlWidth = volumeButtonSize + volumeControlGap + volumeSliderWidth;
     const float volumeX = std::max(minimumMainX, windowWidth - sidebarPadding - volumeControlWidth);
+    const float mediaControlsRight = transportBarX + transportBarWidth + timestampGap + timestampWidth;
+    const float visualizerAvailableWidth = volumeX - mediaControlsRight - visualizerControlGap * 2.0f;
+    visualizerVisible_ = visualizerAvailableWidth >= minVisualizerWidth;
+    visualizerWidth_ = visualizerVisible_
+        ? std::min(preferredVisualizerWidth, visualizerAvailableWidth)
+        : 0.0f;
+    visualizerX_ = (mediaControlsRight + volumeX - visualizerWidth_) * 0.5f;
+    visualizerY_ = transportBarY + transportBarThickness - visualizerHeight;
+    visualizerHeight_ = visualizerHeight;
     volumeSliderX_ = volumeX + volumeButtonSize + volumeControlGap;
     volumeSliderY_ = volumeY + (volumeButtonSize - volumeSliderHeight) * 0.5f;
     volumeSliderWidth_ = volumeSliderWidth;
@@ -1758,6 +1771,23 @@ void App::buildInitialScene(float windowWidth, float windowHeight)
         togglePlayback();
     });
     addTransportButton(forwardIcon, transportX + (transportButtonSize + transportButtonGap) * 2.0f, transportY, [this] { playNext(true); });
+    for (std::size_t channel = 0; channel < visualizerBarIds_.size(); ++channel) {
+        for (std::size_t band = 0; band < visualizerBarIds_[channel].size(); ++band) {
+            visualizerBarIds_[channel][band] = primitives_.add(Primitive::quad(
+                {
+                    .x = visualizerX_,
+                    .y = visualizerY_ + visualizerHeight_ - 2.0f,
+                    .width = 1.0f,
+                    .height = 2.0f,
+                },
+                {
+                    .fill = iconGrey,
+                    .stroke = iconGrey,
+                    .strokeWidth = 0.0f,
+                }));
+        }
+    }
+    refreshVisualizer();
     addVolumeButton(volumeX, volumeY);
     primitives_.add(Primitive::roundedRect(
         {
@@ -4376,7 +4406,7 @@ std::int32_t App::eventPollTimeoutMilliseconds(bool needsDraw) const
         return 0;
     }
     if (playing_) {
-        return 100;
+        return 50;
     }
     const bool searchFieldFocused = (addSongsMenuOpen_ && addSongsSearchFocused_)
         || (!anyModalOpen() && (playlistSearchFocused_ || playlistMetadataField_ != TextFieldTarget::None));
@@ -5208,6 +5238,7 @@ void App::playSelectedSource()
 
 void App::startCurrentTrack()
 {
+    resetVisualizerState();
     while (playbackQueue_.current()) {
         const Track* track = findTrack(*playbackQueue_.current());
         if (track != nullptr && track->available && audioPlayer_.play(track->path)) {
@@ -5286,6 +5317,7 @@ void App::pollPlayback()
         flushPlaybackStats();
     }
     refreshListenedTime();
+    std::optional<AudioPlayer::SpectrumFrame> latestSpectrum;
     for (const AudioPlayer::Event& event : audioPlayer_.pollEvents()) {
         if (event.type == AudioPlayer::EventType::Eos) {
             playbackStats_.finish(true, false, now);
@@ -5301,6 +5333,12 @@ void App::pollPlayback()
             startCurrentTrack();
             return;
         }
+        if (event.type == AudioPlayer::EventType::Spectrum) {
+            latestSpectrum = event.spectrum;
+        }
+    }
+    if (latestSpectrum) {
+        applySpectrumFrame(*latestSpectrum);
     }
     if (hasCurrentSong_) {
         const float position = static_cast<float>(audioPlayer_.positionMs()) / 1000.0f;
@@ -5474,6 +5512,124 @@ void App::refreshVolumeControl()
     refreshPrimitives(iconSourceChanged ? VulkanRenderer::PrimitiveUpdate::Svg : VulkanRenderer::PrimitiveUpdate::DrawOnly);
 }
 
+void App::resetVisualizerState()
+{
+    visualizerLevels_ = {};
+    visualizerLowDb_ = {};
+    visualizerHighDb_ = {};
+    visualizerRangeInitialized_ = false;
+    if (sceneReady_) {
+        refreshVisualizer();
+    }
+}
+
+void App::applySpectrumFrame(const AudioPlayer::SpectrumFrame& frame)
+{
+    if (frame.channelMagnitudesDb.empty()) {
+        return;
+    }
+
+    constexpr float thresholdDb = -70.0f;
+    constexpr float strongBandDb = -18.0f;
+    constexpr float minimumRangeDb = 12.0f;
+    constexpr float lowRiseDbPerFrame = 0.12f;
+    constexpr float highFallDbPerFrame = 0.30f;
+    std::array<float, 10> magnitudesDb;
+    magnitudesDb.fill(thresholdDb);
+
+    for (std::size_t band = 0; band < visualizerLevels_.front().size(); ++band) {
+        for (const std::vector<float>& channel : frame.channelMagnitudesDb) {
+            if (band < channel.size()) {
+                magnitudesDb[band] = std::max(magnitudesDb[band], channel[band]);
+            }
+        }
+    }
+
+    if (!visualizerRangeInitialized_) {
+        visualizerLowDb_ = magnitudesDb;
+        visualizerHighDb_ = magnitudesDb;
+        visualizerRangeInitialized_ = true;
+    }
+
+    for (std::size_t band = 0; band < visualizerLevels_.front().size(); ++band) {
+        const float magnitudeDb = magnitudesDb[band];
+        // New extrema land immediately; old extrema contract slowly as the song changes.
+        visualizerLowDb_[band] = std::min(magnitudeDb, visualizerLowDb_[band] + lowRiseDbPerFrame);
+        visualizerHighDb_[band] = std::max(magnitudeDb, visualizerHighDb_[band] - highFallDbPerFrame);
+
+        const float observedCenterDb = (visualizerLowDb_[band] + visualizerHighDb_[band]) * 0.5f;
+        const float observedRangeDb = std::max(
+            minimumRangeDb,
+            visualizerHighDb_[band] - visualizerLowDb_[band]);
+        const float adaptive = std::clamp(
+            (magnitudeDb - (observedCenterDb - observedRangeDb * 0.5f)) / observedRangeDb,
+            0.0f,
+            1.0f);
+        const float absolute = std::clamp(
+            (magnitudeDb - thresholdDb) / (strongBandDb - thresholdDb),
+            0.0f,
+            1.0f);
+        const float normalized = adaptive * 0.8f + absolute * 0.2f;
+        const float target = std::pow(normalized, 0.7f) * std::pow(absolute, 0.25f);
+        for (auto& channelLevels : visualizerLevels_) {
+            const float factor = target > channelLevels[band] ? 0.65f : 0.22f;
+            channelLevels[band] += (target - channelLevels[band]) * factor;
+        }
+    }
+    refreshVisualizer();
+}
+
+void App::refreshVisualizer()
+{
+    constexpr float idleHeight = 2.0f;
+    constexpr float barGap = 2.0f;
+    constexpr float centerGap = barGap;
+    const Color muted = rgb(133, 146, 137);
+    const Color accent = rgb(167, 192, 128);
+    const auto blendedColor = [&](float intensity) {
+        return Color{
+            .r = muted.r + (accent.r - muted.r) * intensity,
+            .g = muted.g + (accent.g - muted.g) * intensity,
+            .b = muted.b + (accent.b - muted.b) * intensity,
+            .a = muted.a + (accent.a - muted.a) * intensity,
+        };
+    };
+
+    const float halfWidth = std::max(0.0f, (visualizerWidth_ - centerGap) * 0.5f);
+    const float barWidth = std::max(
+        1.0f,
+        (halfWidth - barGap * 9.0f) / 10.0f);
+    const float baseline = visualizerY_ + visualizerHeight_;
+
+    for (std::size_t channel = 0; channel < visualizerBarIds_.size(); ++channel) {
+        for (std::size_t band = 0; band < visualizerBarIds_[channel].size(); ++band) {
+            Primitive* primitive = primitives_.find(visualizerBarIds_[channel][band]);
+            auto* quad = primitive == nullptr ? nullptr : std::get_if<QuadPrimitive>(&primitive->geometry);
+            if (quad == nullptr) {
+                continue;
+            }
+
+            primitive->visible = visualizerVisible_;
+            const float intensity = playing_ ? visualizerLevels_[channel][band] : 0.0f;
+            quad->height = idleHeight + intensity * (visualizerHeight_ - idleHeight);
+            quad->y = baseline - quad->height;
+            quad->width = barWidth;
+            if (channel == 0) {
+                quad->x = visualizerX_ + halfWidth
+                    - barWidth
+                    - static_cast<float>(band) * (barWidth + barGap);
+            } else {
+                quad->x = visualizerX_ + halfWidth + centerGap
+                    + static_cast<float>(band) * (barWidth + barGap);
+            }
+            primitive->style.fill = blendedColor(intensity);
+            primitive->style.stroke = primitive->style.fill;
+        }
+    }
+
+    refreshPrimitives(VulkanRenderer::PrimitiveUpdate::DrawOnly);
+}
+
 void App::refreshMediaProgressControl()
 {
     const float progress = hasCurrentSong_ && currentSongDurationSeconds_ > 0.0f
@@ -5559,6 +5715,7 @@ void App::refreshListenedTime()
 void App::rebuildScene()
 {
     primitives_.clear();
+    visualizerBarIds_ = {};
     firstModalPrimitiveId_ = 0;
     playlistTrackRows_.clear();
     draggingPlaylistScrollbar_ = false;

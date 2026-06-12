@@ -11,10 +11,15 @@ namespace womp {
 
 class AudioPlayer {
 public:
-    enum class EventType { Eos, Error, StateChanged, Seeked };
+    struct SpectrumFrame {
+        std::vector<std::vector<float>> channelMagnitudesDb;
+    };
+
+    enum class EventType { Eos, Error, StateChanged, Seeked, Spectrum };
     struct Event {
         EventType type = EventType::StateChanged;
         std::string message;
+        SpectrumFrame spectrum;
     };
 
     explicit AudioPlayer(bool fakeSink = false);
